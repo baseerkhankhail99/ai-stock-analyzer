@@ -1,57 +1,122 @@
 version: '3.8'
 
 services:
+  # PostgreSQL Database
   postgres:
-    image: postgres:15
+    image: postgres:15-alpine
+    container_name: stock_analyzer_db
     environment:
       POSTGRES_USER: stock_user
       POSTGRES_PASSWORD: stock_password
       POSTGRES_DB: stock_analyzer
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stock_user -d stock_analyzer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - stock_network
 
+  # Redis Cache
   redis:
     image: redis:7-alpine
+    container_name: stock_analyzer_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - stock_network
 
-  backend:
+  # Flask API Server
+  api:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "5000:5000"
+    container_name: stock_analyzer_api
     environment:
-      FLASK_ENV: development
+      FLASK_ENV: production
       DATABASE_URL: postgresql://stock_user:stock_password@postgres:5432/stock_analyzer
       REDIS_URL: redis://redis:6379/0
+      FLASK_DEBUG: 'False'
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - stock_network
+    restart: unless-stopped
+
+  # Dash Dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock_analyzer_dashboard
+    environment:
+      FLASK_ENV: production
+      DATABASE_URL: postgresql://stock_user:stock_password@postgres:5432/stock_analyzer
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+    ports:
+      - "8050:8050"
+    depends_on:
+      - api
+    command: python dashboard.py
+    networks:
+      - stock_network
+    restart: unless-stopped
+
+  # Celery Worker (for async tasks)
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock_analyzer_celery
+    environment:
+      FLASK_ENV: production
+      DATABASE_URL: postgresql://stock_user:stock_password@postgres:5432/stock_analyzer
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
     depends_on:
       - postgres
       - redis
-    volumes:
-      - .:/app
+      - api
+    command: celery -A tasks worker --loglevel=info
     networks:
       - stock_network
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    networks:
-      - stock_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   stock_network:
