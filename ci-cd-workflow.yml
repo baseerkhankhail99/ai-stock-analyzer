@@ -146,7 +146,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
-        push: true
+        push: ${{ vars.ENABLE_IMAGE_PUSH == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
 
@@ -218,7 +218,7 @@ jobs:
   notify-push:
     name: Notify Push Completion
     runs-on: ubuntu-latest
-    needs: [test, security-scan, build, deploy-staging, deploy-production]
+    needs: [test, security-scan, build]
     if: github.event_name == 'push' && always()
     
     steps:
@@ -227,9 +227,7 @@ jobs:
       run: |
         if [ "${{ needs.test.result }}" = "failure" ] || \
            [ "${{ needs.security-scan.result }}" = "failure" ] || \
-           [ "${{ needs.build.result }}" = "failure" ] || \
-           [ "${{ needs.deploy-staging.result }}" = "failure" ] || \
-           [ "${{ needs.deploy-production.result }}" = "failure" ]; then
+           [ "${{ needs.build.result }}" = "failure" ]; then
           echo "status=failed" >> $GITHUB_OUTPUT
         else
           echo "status=success" >> $GITHUB_OUTPUT

@@ -33,13 +33,13 @@ Performs security audits on code and dependencies.
 ```
 
 #### 3. **Build Job**
-Builds and pushes Docker image to GitHub Container Registry.
+Builds the Docker image and can optionally push it to GitHub Container Registry.
 
 ```yaml
 - Triggers on push to main/develop (after tests pass)
-- Builds multi-platform Docker image
-- Pushes to ghcr.io with semantic versioning
-- Tags: branch, semver, and SHA
+- Builds the repository Docker image with Docker Buildx
+- Pushes to ghcr.io only when `ENABLE_IMAGE_PUSH=true`
+- Tags use branch and SHA metadata on branch pushes, with semver tags available for version-tag workflows
 ```
 
 #### 4. **Deploy to Staging Job**
@@ -92,6 +92,7 @@ To keep placeholder deploy jobs disabled until your real deployment commands are
 
 | Variable | Suggested value |
 | --- | --- |
+| `ENABLE_IMAGE_PUSH` | `false` until registry publishing is configured |
 | `ENABLE_STAGING_DEPLOY` | `false` until staging automation is configured |
 | `ENABLE_PRODUCTION_DEPLOY` | `false` until production automation is configured |
 
