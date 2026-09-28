@@ -22,9 +22,9 @@ technical_analyzer = TechnicalAnalyzer()
 analytics_engine = AnalyticsEngine()
 
 
-def internal_server_error(log_message, client_message):
+def internal_server_error(log_message, client_message, exc):
     """Log the exception server-side and return a generic error response."""
-    logger.exception(log_message)
+    logger.error("%s: %s", log_message, exc, exc_info=True)
     return jsonify({"error": client_message}), 500
 
 
@@ -48,10 +48,11 @@ def get_stock_price(symbol):
         if price_data:
             return jsonify(price_data), 200
         return jsonify({"error": "Stock not found"}), 404
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error fetching price for {symbol}",
             "Unable to fetch stock price.",
+            exc,
         )
 
 
@@ -64,10 +65,11 @@ def get_crypto_price(symbol):
         if price_data:
             return jsonify(price_data), 200
         return jsonify({"error": "Crypto not found"}), 404
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error fetching crypto price for {symbol}",
             "Unable to fetch crypto price.",
+            exc,
         )
 
 
@@ -80,10 +82,11 @@ def get_stock_info(symbol):
         if info:
             return jsonify(info), 200
         return jsonify({"error": "Stock not found"}), 404
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error fetching stock info for {symbol}",
             "Unable to fetch stock information.",
+            exc,
         )
 
 
@@ -122,10 +125,11 @@ def get_stock_history(symbol):
         ]
 
         return jsonify({"symbol": symbol, "data": data}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error fetching history for {symbol}",
             "Unable to fetch stock history.",
+            exc,
         )
 
 
@@ -143,10 +147,11 @@ def get_forecast(symbol):
         if forecast_data:
             return jsonify(forecast_data), 200
         return jsonify({"error": "Could not generate forecast"}), 500
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error generating forecast for {symbol}",
             "Unable to generate forecast.",
+            exc,
         )
 
 
@@ -178,10 +183,11 @@ def get_stored_forecasts(symbol):
         ]
 
         return jsonify({"symbol": symbol, "forecasts": data}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error fetching forecasts for {symbol}",
             "Unable to fetch stored forecasts.",
+            exc,
         )
 
 
@@ -226,10 +232,11 @@ def get_technical_indicators(symbol):
             )
 
         return jsonify({"error": "No indicators found"}), 404
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error fetching indicators for {symbol}",
             "Unable to fetch technical indicators.",
+            exc,
         )
 
 
@@ -240,10 +247,11 @@ def get_trading_signals(symbol):
     try:
         signals = technical_analyzer.get_signal(symbol)
         return jsonify({"symbol": symbol, "signal": signals}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error getting signals for {symbol}",
             "Unable to fetch trading signals.",
+            exc,
         )
 
 
@@ -259,10 +267,11 @@ def get_analytics(symbol):
         if analytics:
             return jsonify(analytics), 200
         return jsonify({"error": "Could not generate analytics"}), 500
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error generating analytics for {symbol}",
             "Unable to generate analytics report.",
+            exc,
         )
 
 
@@ -275,10 +284,11 @@ def get_price_targets(symbol):
         if targets:
             return jsonify(targets), 200
         return jsonify({"error": "Could not calculate price targets"}), 500
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error calculating price targets for {symbol}",
             "Unable to calculate price targets.",
+            exc,
         )
 
 
@@ -301,10 +311,11 @@ def compare_stocks():
         if comparison:
             return jsonify(comparison), 200
         return jsonify({"error": "Could not compare stocks"}), 500
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             f"Error comparing stocks {symbol1} and {symbol2}",
             "Unable to compare stocks.",
+            exc,
         )
 
 
@@ -324,10 +335,11 @@ def compare_all_stocks():
 
         comparisons = analytics_engine.compare_all_stocks(symbols, days)
         return jsonify({"comparisons": comparisons}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             "Error comparing all stocks",
             "Unable to compare the provided stocks.",
+            exc,
         )
 
 
@@ -349,10 +361,11 @@ def sync_stock_data():
 
         data_fetcher.fetch_and_store_all_stocks(symbols)
         return jsonify({"message": f"Synced {len(symbols)} stocks"}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             "Error syncing stock data",
             "Unable to sync stock data.",
+            exc,
         )
 
 
@@ -375,10 +388,11 @@ def calculate_indicators():
             results.append({"symbol": symbol, "success": success})
 
         return jsonify({"results": results}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             "Error calculating indicators",
             "Unable to calculate technical indicators.",
+            exc,
         )
 
 
@@ -400,10 +414,11 @@ def get_stocks_list():
         ]
 
         return jsonify({"stocks": data}), 200
-    except Exception:
+    except Exception as exc:
         return internal_server_error(
             "Error fetching stocks list",
             "Unable to fetch tracked stocks.",
+            exc,
         )
 
 
