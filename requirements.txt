@@ -44,7 +44,7 @@ celery==5.3.1
 
 # API & Web
 gunicorn==21.2.0
-werkzeug==2.3.6
+werkzeug==2.2.3
 
 # Utilities
 python-dateutil==2.8.2
