@@ -134,9 +134,9 @@ black --check .
 isort --check-only .
 
 # Run security scans
-pip install -r requirements-ci.txt
-bandit -r . --severity-level low --confidence-level low
-safety check -r requirements-ci.txt
+pip install pipx
+python -m pipx run --spec bandit==1.9.4 bandit -r . --severity-level low --confidence-level low
+python -m pipx run --spec safety==2.3.5 safety check -r requirements.txt
 ```
 
 ### Docker Build & Push

@@ -1,3 +1,0 @@
--r requirements.txt
-bandit==1.9.4
-safety==2.3.5
