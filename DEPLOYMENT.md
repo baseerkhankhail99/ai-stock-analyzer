@@ -1,41 +1,28 @@
-# CI/CD Pipeline Deployment Guide
+# AI Stock Analyzer - Deployment & CI/CD Guide
 
-This guide explains the GitHub Actions CI/CD pipeline, how to set it up, and how to configure deployments for your AI Stock Analyzer application.
+## GitHub Actions CI/CD Pipeline
 
-## Overview
+This guide provides a comprehensive CI/CD workflow configuration for automated testing, building, and deployment.
 
-The CI/CD pipeline automates testing, security scanning, Docker builds, and multi-environment deployments. It consists of 6 core jobs:
+### Pipeline Overview
 
-### Job Flow
+The recommended GitHub Actions workflow includes the following jobs:
 
-```
-┌─────────┐
-│  Test   │  Runs on: All pushes & PRs
-└────┬────┘
-     │
-     ├──────────────────┬─────────────────┐
-     │                  │                 │
-  ┌──▼──────┐    ┌─────▼────┐     ┌─────▼──────┐
-  │Security │    │   Build  │     │  Notify    │
-  │  Scan   │    │  Docker  │     │   (PR)     │
-  └─────────┘    └──┬───┬───┘     └────────────┘
-                    │   │
-             ┌──────┘   └──────┐
-             │                 │
-          ┌──▼──┐          ┌───▼──┐
-          │Stage│          │ Prod │
-          │  ing│          │      │
-          └─────┘          └──────┘
-```
-
-#### 1. **Test Job**
-Runs on all pushes and pull requests.
+#### 1. **Test & Lint Job**
+Runs on every push and pull request to main/develop branches.
 
 ```yaml
-- Linting: flake8, black, isort
-- Unit tests: pytest with coverage
-- Services: PostgreSQL 15, Redis 7
+- Python 3.11 setup with dependency caching
+- Flake8 linting (syntax and complexity checks)
+- Black code formatting verification
+- isort import sorting verification
+- pytest with coverage reporting
+- Codecov integration for coverage tracking
 ```
+
+**Services:**
+- PostgreSQL 15-alpine (for database tests)
+- Redis 7-alpine (for caching tests)
 
 #### 2. **Security Scan Job**
 Performs security audits on code and dependencies.
@@ -46,47 +33,47 @@ Performs security audits on code and dependencies.
 ```
 
 #### 3. **Build Job**
-Builds a Docker image after test and security scans pass.
+Builds the Docker image and can optionally push it to GitHub Container Registry.
 
 ```yaml
-- Triggered: Only on pushes to main/develop
-- Requires: test + security-scan to pass
-- Image registry: GitHub Container Registry (ghcr.io)
-- Publishing: Opt-in via ENABLE_IMAGE_PUSH variable
+- Triggers on push to main/develop (after tests pass)
+- Builds the repository Docker image with Docker Buildx
+- Pushes to ghcr.io only when `ENABLE_IMAGE_PUSH=true`
+- Tags use branch and SHA metadata on branch pushes
 ```
 
-#### 4. **Deploy to Staging**
-Deploys to staging environment after successful build.
+#### 4. **Deploy to Staging Job**
+Deploys to staging when code is pushed to develop branch.
 
 ```yaml
-- Triggered: Pushes to develop branch
-- Requires: ENABLE_IMAGE_PUSH=true + ENABLE_STAGING_DEPLOY=true
-- Customize: Update deployment commands for your infrastructure
+- Runs after successful Docker build
+- Example: kubectl apply -f k8s/staging/
+- Or: docker compose -f docker-compose.staging.yml up -d
 ```
 
-#### 5. **Deploy to Production**
-Deploys to production environment after successful build.
+#### 5. **Deploy to Production Job**
+Deploys to production when code is pushed to main branch.
 
 ```yaml
-- Triggered: Pushes to main branch
-- Requires: ENABLE_IMAGE_PUSH=true + ENABLE_PRODUCTION_DEPLOY=true
-- Environment protection: Requires manual review/approval (optional)
-- Customize: Update deployment commands for your infrastructure
+- Runs after successful Docker build
+- Requires environment approval
+- Uses production secrets (DEPLOY_KEY)
+- Example: kubectl apply -f k8s/production/
 ```
 
 #### 6. **Notify Job**
-Sends notifications (e.g., Slack) on pipeline completion.
+Sends notifications (e.g., Slack) on pipeline completion:
 
 ```yaml
-- notify-pr: runs for pull requests after test and security scan jobs
-- notify-push: runs for pushes after test and security scan jobs
+- `notify-pr`: runs for pull requests after test and security scan jobs
+- `notify-push`: runs for pushes after test and security scan jobs
 ```
 
 ### Setup Instructions
 
 #### Step 1: Create Workflow File
 
-This pull request adds the reference workflow as `ci-cd-workflow.yml`. After merging, move it to `.github/workflows/ci-cd.yml` to activate it.
+This pull request adds the reference workflow as `ci-cd-workflow.yml`. After merging, copy or move it to `.github/workflows/ci-cd.yml` to activate it.
 
 #### Step 2: Configure GitHub Secrets
 
@@ -182,43 +169,48 @@ The reference workflow already sets test-only values for `FLASK_ENV`, `DATABASE_
 | `DEPLOY_KEY` | Deployment credential for the production job |
 | `SLACK_WEBHOOK` | Optional Slack webhook for notifications |
 
-## Troubleshooting
+### Monitoring Pipeline
 
-### Workflow doesn't run
-- Check that `.github/workflows/ci-cd.yml` exists (not `ci-cd-workflow.yml`)
-- Wait 1-2 minutes after pushing
-- Refresh the GitHub Actions page
+View workflow runs in GitHub:
 
-### Tests fail locally but pass in CI
-- Ensure PostgreSQL and Redis are running: `docker run -d -p 5432:5432 postgres:15-alpine`
-- Check environment variables match CI configuration
-- Review test logs for database connection issues
+1. Navigate to **Actions** tab in your repository
+2. Click on the workflow run
+3. Review job logs and status
+4. Check code coverage in Codecov integration
 
-### Docker build fails
-- Verify `Dockerfile` exists in repository root
-- Check that all build dependencies are in `requirements.txt`
-- Review build logs for specific errors
+### Troubleshooting
 
-### Deployment fails
-- Verify `DEPLOY_KEY` secret is set correctly
-- Ensure deployment commands are updated for your infrastructure
-- Check CloudFormation/Kubernetes manifests are correct
-- Review deployment logs for error details
+**Tests fail locally but pass in CI:**
+- Ensure PostgreSQL and Redis are running locally
+- Check environment variables are set correctly
+- Run tests with: `pytest -v`
 
-### Security scan fails
-- Fix Bandit issues: update code or add `# nosec` comments
-- Fix pip-audit issues: update vulnerable dependencies
-- Review security reports in workflow logs
+**Docker build fails:**
+- Verify all files are committed (Dockerfile, requirements.txt, etc.)
+- Check registry credentials with: `docker login ghcr.io`
+- Review Docker build logs in GitHub Actions
 
-## Best Practices
+**Deployment fails:**
+- Verify deployment secrets are set correctly
+- Check deployment target is accessible
+- Review deployment logs in GitHub Actions UI
+- Ensure kubeconfig or cloud credentials are valid
 
-1. **Always test locally:**
-   - Run linting and tests before pushing
-   - Fix issues early to avoid CI failures
+**Coverage reports not uploading:**
+- Verify coverage.xml is generated: `pytest --cov-report=xml`
+- Check the `codecov/codecov-action` step configuration in the workflow
+- Confirm any required Codecov token or repository integration settings are configured
+
+### Best Practices
+
+1. **Always use branch protection rules:**
+   - Require status checks to pass before merging
+   - Require code reviews
+   - Dismiss stale reviews on push
 
 2. **Keep dependencies updated:**
+   - Use Dependabot for automated dependency PRs
    - Review and test updated dependencies before merging
-   - Use Dependabot for automated updates (optional)
 
 3. **Monitor security:**
    - Review Bandit and pip-audit reports regularly
@@ -226,15 +218,17 @@ The reference workflow already sets test-only values for `FLASK_ENV`, `DATABASE_
 
 4. **Optimize build times:**
    - Use Docker layer caching
-   - Cache pip dependencies in CI
-   - Parallelize tests when possible
+   - Cache pip dependencies
+   - Use parallel job execution where possible
 
-5. **Use feature branches:**
-   - Create branches for new features
-   - Run full CI/CD on pull requests
-   - Review and merge to develop first
+5. **Document deployment process:**
+   - Keep this guide updated
+   - Document all secrets required
+   - Create runbooks for common issues
 
-6. **Plan deployments:**
-   - Test on staging before production
-   - Use gradual rollouts for large changes
-   - Keep deployment scripts version-controlled
+### Additional Resources
+
+- [GitHub Actions Documentation](https://docs.github.com/en/actions)
+- [Docker Push Action](https://github.com/docker/build-push-action)
+- [Codecov Action](https://github.com/codecov/codecov-action)
+- [Slack Notifications](https://github.com/8398a7/action-slack)
