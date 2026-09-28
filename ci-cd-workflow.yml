@@ -106,9 +106,7 @@ jobs:
         bandit -r . --severity-level low --confidence-level low
     
     - name: Check dependencies with Safety
-      run: |
-        safety check -r requirements.txt
-        safety check
+      run: safety check -r requirements.txt
 
   build:
     name: Build Docker Image
@@ -146,6 +144,7 @@ jobs:
       uses: docker/build-push-action@0a97817b6ade9f46837855d676c4cca3a2471fc9 # v4
       with:
         context: .
+        load: ${{ vars.ENABLE_IMAGE_PUSH != 'true' }}
         push: ${{ vars.ENABLE_IMAGE_PUSH == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
