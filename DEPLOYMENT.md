@@ -130,7 +130,7 @@ isort --check-only .
 
 # Run security scans
 bandit -r .
-safety check -r requirements.txt --json
+safety check -r requirements.txt
 ```
 
 ### Docker Build & Push

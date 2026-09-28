@@ -106,12 +106,12 @@ jobs:
         bandit -r . --severity-level low --confidence-level low
     
     - name: Check dependencies with Safety
-      run: safety check -r requirements.txt --json
+      run: safety check -r requirements.txt
 
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, security-scan]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     
     permissions:
