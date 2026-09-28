@@ -134,9 +134,9 @@ black --check .
 isort --check-only .
 
 # Run security scans
-pip install "safety==2.3.5"  # Match the CI workflow's Safety CLI
+pip install -r requirements-ci.txt
 bandit -r . --severity-level low --confidence-level low
-safety check -r requirements.txt
+safety check -r requirements-ci.txt
 ```
 
 ### Docker Build & Push
