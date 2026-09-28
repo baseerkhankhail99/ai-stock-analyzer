@@ -90,7 +90,7 @@ def test_dashboard_uses_timeout_helper_for_all_http_gets():
     dashboard_tree = parse_source("dashboard.py")
 
     request_get_call_count = 0
-    helper_call_functions = 0
+    helper_call_functions = set()
 
     for function in [
         node for node in dashboard_tree.body if isinstance(node, ast.FunctionDef)
@@ -111,14 +111,19 @@ def test_dashboard_uses_timeout_helper_for_all_http_gets():
                 and node.func.id == "fetch_api_response"
                 and function.name != "fetch_api_response"
             ):
-                helper_call_functions += 1
+                helper_call_functions.add(function.name)
 
     ensure(
         request_get_call_count == 1,
         "Expected dashboard requests.get usage to be centralized in the helper.",
     )
     ensure(
-        helper_call_functions >= 4,
+        {
+            "update_stock_analysis",
+            "update_price_chart",
+            "update_technical_signals",
+            "update_comparison",
+        }.issubset(helper_call_functions),
         "Expected dashboard callbacks that perform HTTP requests to use the timeout helper.",
     )
 

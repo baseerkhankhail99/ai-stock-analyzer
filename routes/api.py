@@ -328,7 +328,10 @@ def compare_all_stocks():
         if error_response:
             return error_response
         symbols = data.get("symbols", [])
-        days = data.get("days", 30)
+        try:
+            days = int(data.get("days", 30))
+        except (TypeError, ValueError):
+            return jsonify({"error": "days must be an integer"}), 400
 
         if not symbols:
             return jsonify({"error": "symbols array required"}), 400

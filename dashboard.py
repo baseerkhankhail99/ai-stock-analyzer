@@ -387,9 +387,21 @@ def update_stock_analysis(n_clicks, symbol):
         # Create price info display
         if price_data:
             price_value = price_data.get("price")
+            change_percent_value = price_data.get("change_percent")
+            volume_value = price_data.get("volume")
             price_display = (
                 f"${price_value:.2f}"
                 if isinstance(price_value, (int, float))
+                else "N/A"
+            )
+            change_percent_display = (
+                f"{change_percent_value:.2f}%"
+                if isinstance(change_percent_value, (int, float))
+                else "N/A"
+            )
+            volume_display = (
+                f"{int(volume_value):,}"
+                if isinstance(volume_value, (int, float))
                 else "N/A"
             )
             price_info = html.Div(
@@ -409,11 +421,11 @@ def update_stock_analysis(n_clicks, symbol):
                                                 className="metric",
                                             ),
                                             html.Span(
-                                                f"Change: {price_data.get('change_percent', 0):.2f}%",
+                                                f"Change: {change_percent_display}",
                                                 className="metric",
                                             ),
                                             html.Span(
-                                                f"Volume: {price_data.get('volume', 0):,}",
+                                                f"Volume: {volume_display}",
                                                 className="metric",
                                             ),
                                             html.Span(
@@ -519,13 +531,16 @@ def update_forecast_chart(forecast_data, symbol, days):
                 )
 
                 # Add confidence interval
-                if model_data["lower_bound"].notna().any():
+                confidence_interval_data = model_data.dropna(
+                    subset=["lower_bound", "upper_bound"]
+                )
+                if not confidence_interval_data.empty:
                     fig.add_trace(
                         go.Scatter(
-                            x=model_data["date"].tolist()
-                            + model_data["date"].tolist()[::-1],
-                            y=model_data["upper_bound"].tolist()
-                            + model_data["lower_bound"].tolist()[::-1],
+                            x=confidence_interval_data["date"].tolist()
+                            + confidence_interval_data["date"].tolist()[::-1],
+                            y=confidence_interval_data["upper_bound"].tolist()
+                            + confidence_interval_data["lower_bound"].tolist()[::-1],
                             fill="toself",
                             fillcolor=f"rgba(0,100,200,0.1)",
                             line=dict(color="rgba(255,255,255,0)"),
