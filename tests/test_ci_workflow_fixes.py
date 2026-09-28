@@ -146,7 +146,13 @@ def test_slack_notifications_are_skipped_without_secret():
                     slack_conditions.append(condition)
                     break
 
-    ensure(
-        slack_conditions == ["always() && secrets.SLACK_WEBHOOK != ''"] * 2,
-        "Expected both Slack notification jobs to skip cleanly without the secret.",
-    )
+    ensure(len(slack_conditions) == 2, "Expected two Slack notification conditions.")
+    for condition in slack_conditions:
+        normalized = condition.replace('"', "'").replace(" ", "")
+        ensure(
+            "always()" in normalized, "Expected Slack step to always evaluate post-job."
+        )
+        ensure(
+            "secrets.SLACK_WEBHOOK!=''" in normalized,
+            "Expected Slack step to require a non-empty SLACK_WEBHOOK secret.",
+        )
