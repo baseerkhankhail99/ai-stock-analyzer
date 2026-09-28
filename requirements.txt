@@ -30,7 +30,7 @@ ta-lib==0.4.24
 # Data Fetching
 yfinance==0.2.28
 alpha-vantage==2.3.1
-finnhub-python==1.0.8
+finnhub-python==2.2.1
 requests==2.31.0
 
 # Dashboard & Visualization
