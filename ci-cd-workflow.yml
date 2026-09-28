@@ -100,10 +100,10 @@ jobs:
         pip install bandit safety
     
     - name: Run Bandit security scan
-      run: bandit -r . -f json -o bandit-report.json || true
+      run: bandit -r . -f json -o bandit-report.json
     
     - name: Check dependencies with Safety
-      run: safety check --json || true
+      run: safety check --json
 
   build:
     name: Build Docker Image
@@ -151,7 +151,7 @@ jobs:
     name: Deploy to Staging
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/develop' && vars.ENABLE_STAGING_DEPLOY == 'true'
     
     steps:
     - uses: actions/checkout@v4
@@ -167,11 +167,10 @@ jobs:
     name: Deploy to Production
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_PRODUCTION_DEPLOY == 'true'
     
     environment:
       name: production
-      url: https://your-production-url.com
     
     steps:
     - uses: actions/checkout@v4

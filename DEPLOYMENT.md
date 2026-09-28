@@ -88,6 +88,13 @@ For production deployments, create an environment:
 3. Set required reviewers (recommended)
 4. Add environment-specific secrets
 
+To keep placeholder deploy jobs disabled until your real deployment commands are ready, add repository variables under **Settings > Secrets and variables > Actions > Variables**:
+
+| Variable | Suggested value |
+| --- | --- |
+| `ENABLE_STAGING_DEPLOY` | `false` until staging automation is configured |
+| `ENABLE_PRODUCTION_DEPLOY` | `false` until production automation is configured |
+
 #### Step 4: Update Deployment Commands
 
 Edit the `deploy-staging` and `deploy-production` jobs with your actual deployment commands:
@@ -130,14 +137,19 @@ safety check
 To manually build and push the Docker image:
 
 ```bash
+# Set your image coordinates
+export REGISTRY=ghcr.io
+export IMAGE_NAME=OWNER/REPOSITORY
+export IMAGE_TAG=latest
+
 # Build image
-docker build -t ghcr.io/baseerkhankhail99/ai-stock-analyzer:latest .
+docker build -t "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG" .
 
 # Login to GitHub Container Registry
-echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+echo "$GHCR_TOKEN" | docker login "$REGISTRY" -u "$GHCR_USERNAME" --password-stdin
 
 # Push image
-docker push ghcr.io/baseerkhankhail99/ai-stock-analyzer:latest
+docker push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
 ```
 
 ### Environment Variables for CI/CD
@@ -179,9 +191,9 @@ View workflow runs in GitHub:
 - Ensure kubeconfig or cloud credentials are valid
 
 **Coverage reports not uploading:**
-- Install codecov: `pip install codecov`
 - Verify coverage.xml is generated: `pytest --cov-report=xml`
-- Check Codecov token in repository settings
+- Check the `codecov/codecov-action` step configuration in the workflow
+- Confirm any required Codecov token or repository integration settings are configured
 
 ### Best Practices
 
