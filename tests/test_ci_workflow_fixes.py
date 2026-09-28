@@ -87,23 +87,63 @@ def test_dashboard_wraps_requests_with_timeout_helper():
 
 
 def test_dashboard_uses_timeout_helper_for_all_http_gets():
-    dashboard_source = read_source("dashboard.py")
+    dashboard_tree = parse_source("dashboard.py")
+
+    request_get_call_count = 0
+    helper_call_functions = set()
+
+    for function in [
+        node for node in dashboard_tree.body if isinstance(node, ast.FunctionDef)
+    ]:
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "requests"
+                and node.func.attr == "get"
+            ):
+                request_get_call_count += 1
+
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "fetch_api_response"
+                and function.name != "fetch_api_response"
+            ):
+                helper_call_functions.add(function.name)
 
     ensure(
-        dashboard_source.count("requests.get(") == 1,
+        request_get_call_count == 1,
         "Expected dashboard requests.get usage to be centralized in the helper.",
     )
     ensure(
-        dashboard_source.count("fetch_api_response(") >= 6,
+        helper_call_functions
+        == {
+            "update_stock_analysis",
+            "update_price_chart",
+            "update_technical_signals",
+            "update_comparison",
+        },
         "Expected dashboard callbacks to use the timeout helper.",
     )
 
 
 def test_slack_notifications_are_skipped_without_secret():
-    workflow_source = read_source(".github/workflows/ci-cd.yml")
+    workflow_lines = read_source(".github/workflows/ci-cd.yml").splitlines()
+    slack_conditions = []
 
-    condition = "if: always() && secrets.SLACK_WEBHOOK != ''"
+    for index, line in enumerate(workflow_lines):
+        if line.strip() == "- name: Notify Slack (optional)":
+            for next_line in workflow_lines[index + 1 :]:
+                stripped = next_line.strip()
+                if stripped.startswith("- name:"):
+                    break
+                if stripped.startswith("if:"):
+                    slack_conditions.append(stripped.removeprefix("if:").strip())
+                    break
+
     ensure(
-        workflow_source.count(condition) == 2,
+        slack_conditions == ["always() && secrets.SLACK_WEBHOOK != ''"] * 2,
         "Expected both Slack notification jobs to skip cleanly without the secret.",
     )
