@@ -39,7 +39,7 @@ Builds the Docker image and can optionally push it to GitHub Container Registry.
 - Triggers on push to main/develop (after tests pass)
 - Builds the repository Docker image with Docker Buildx
 - Pushes to ghcr.io only when `ENABLE_IMAGE_PUSH=true`
-- Tags use branch and SHA metadata on branch pushes, with semver tags available for version-tag workflows
+- Tags use branch and SHA metadata on branch pushes
 ```
 
 #### 4. **Deploy to Staging Job**
@@ -129,7 +129,7 @@ black --check .
 isort --check-only .
 
 # Run security scans
-bandit -r .
+bandit -r . --severity-level low --confidence-level low
 safety check -r requirements.txt
 ```
 
