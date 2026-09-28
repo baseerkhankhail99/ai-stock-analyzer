@@ -215,13 +215,13 @@ jobs:
         fi
 
     - name: Notify Slack (optional)
-      if: always() && secrets.SLACK_WEBHOOK != ''
+      if: ${{ always() && secrets.SLACK_WEBHOOK_URL != '' }}
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
         text: 'Build and Test Pipeline: ${{ steps.status.outputs.status }}'
       env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   notify-push:
     name: Notify Push Completion
@@ -241,10 +241,10 @@ jobs:
         fi
     
     - name: Notify Slack (optional)
-      if: always() && secrets.SLACK_WEBHOOK != ''
+      if: ${{ always() && secrets.SLACK_WEBHOOK_URL != '' }}
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
         text: 'Build and Test Pipeline: ${{ steps.status.outputs.status }}'
       env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
