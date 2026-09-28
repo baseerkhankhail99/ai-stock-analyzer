@@ -140,7 +140,10 @@ def test_slack_notifications_are_skipped_without_secret():
                 if stripped.startswith("- name:"):
                     break
                 if stripped.startswith("if:"):
-                    slack_conditions.append(stripped.removeprefix("if:").strip())
+                    condition = stripped.removeprefix("if:").strip()
+                    if condition.startswith("${{") and condition.endswith("}}"):
+                        condition = condition[3:-2].strip()
+                    slack_conditions.append(condition)
                     break
 
     ensure(

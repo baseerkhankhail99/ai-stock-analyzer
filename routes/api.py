@@ -28,6 +28,14 @@ def internal_server_error(log_message, client_message):
     return jsonify({"error": client_message}), 500
 
 
+def get_json_payload():
+    """Return a JSON object payload or a 400 response tuple."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return None, (jsonify({"error": "Valid JSON payload required"}), 400)
+    return payload, None
+
+
 # ============= REAL-TIME DATA ENDPOINTS =============
 
 
@@ -305,7 +313,9 @@ def compare_stocks():
 def compare_all_stocks():
     """Compare all stocks with each other"""
     try:
-        data = request.get_json()
+        data, error_response = get_json_payload()
+        if error_response:
+            return error_response
         symbols = data.get("symbols", [])
         days = data.get("days", 30)
 
@@ -329,7 +339,9 @@ def compare_all_stocks():
 def sync_stock_data():
     """Sync stock data"""
     try:
-        data = request.get_json()
+        data, error_response = get_json_payload()
+        if error_response:
+            return error_response
         symbols = data.get("symbols", [])
 
         if not symbols:
@@ -349,7 +361,9 @@ def sync_stock_data():
 def calculate_indicators():
     """Calculate and store technical indicators"""
     try:
-        data = request.get_json()
+        data, error_response = get_json_payload()
+        if error_response:
+            return error_response
         symbols = data.get("symbols", [])
 
         if not symbols:

@@ -386,6 +386,12 @@ def update_stock_analysis(n_clicks, symbol):
 
         # Create price info display
         if price_data:
+            price_value = price_data.get("price")
+            price_display = (
+                f"${price_value:.2f}"
+                if isinstance(price_value, (int, float))
+                else "N/A"
+            )
             price_info = html.Div(
                 [
                     html.Div(
@@ -399,7 +405,7 @@ def update_stock_analysis(n_clicks, symbol):
                                     html.Div(
                                         [
                                             html.Span(
-                                                f"Price: ${price_data.get('price', 'N/A'):.2f}",
+                                                f"Price: {price_display}",
                                                 className="metric",
                                             ),
                                             html.Span(
