@@ -215,7 +215,7 @@ jobs:
         fi
 
     - name: Notify Slack (optional)
-      if: always()
+      if: always() && secrets.SLACK_WEBHOOK != ''
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
@@ -241,7 +241,7 @@ jobs:
         fi
     
     - name: Notify Slack (optional)
-      if: always()
+      if: always() && secrets.SLACK_WEBHOOK != ''
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
