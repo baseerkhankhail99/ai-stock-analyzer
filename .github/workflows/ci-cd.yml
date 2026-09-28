@@ -102,7 +102,7 @@ jobs:
     
     - name: Run Bandit security scan
       run: |
-        python -m pipx run --spec bandit==1.9.4 bandit -r . -f json -o bandit-report.json
+        python -m pipx run --spec bandit==1.9.4 bandit -r . -f json -o bandit-report.json --exit-zero
         python -m pipx run --spec bandit==1.9.4 bandit -r . --severity-level low --confidence-level low
     
     - name: Check dependencies with pip-audit
@@ -215,7 +215,7 @@ jobs:
         fi
 
     - name: Notify Slack (optional)
-      if: always()
+      if: always() && secrets.SLACK_WEBHOOK != ''
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
@@ -241,7 +241,7 @@ jobs:
         fi
     
     - name: Notify Slack (optional)
-      if: always()
+      if: always() && secrets.SLACK_WEBHOOK != ''
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
