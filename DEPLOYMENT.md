@@ -93,8 +93,8 @@ To keep placeholder deploy jobs disabled until your real deployment commands are
 | Variable | Suggested value |
 | --- | --- |
 | `ENABLE_IMAGE_PUSH` | `false` until registry publishing is configured |
-| `ENABLE_STAGING_DEPLOY` | `false` until staging automation is configured |
-| `ENABLE_PRODUCTION_DEPLOY` | `false` until production automation is configured |
+| `ENABLE_STAGING_DEPLOY` | `false` until staging automation is configured; requires `ENABLE_IMAGE_PUSH=true` |
+| `ENABLE_PRODUCTION_DEPLOY` | `false` until production automation is configured; requires `ENABLE_IMAGE_PUSH=true` |
 
 #### Step 4: Update Deployment Commands
 
