@@ -435,7 +435,7 @@ def update_stock_analysis(n_clicks, symbol):
 
     except Exception as e:
         logger.error(f"Error in update_stock_analysis: {str(e)}")
-        return html.Div(f"Error: {str(e)}"), {}, {}, {}
+        return html.Div("Unable to load stock analysis right now."), {}, {}, {}
 
 
 @app.callback(
@@ -601,7 +601,7 @@ def update_technical_signals(stock_data, symbol):
             )
     except Exception as e:
         logger.error(f"Error in update_technical_signals: {str(e)}")
-        return html.Div(f"Error: {str(e)}")
+        return html.Div("Unable to load technical signals right now.")
 
 
 @app.callback(
@@ -642,7 +642,7 @@ def update_analytics_output(analytics_data, symbol):
         )
     except Exception as e:
         logger.error(f"Error in update_analytics_output: {str(e)}")
-        return html.Div(f"Error: {str(e)}")
+        return html.Div("Unable to load analytics right now.")
 
 
 @app.callback(
@@ -696,7 +696,7 @@ def update_comparison(n_clicks, symbol1, symbol2):
             )
     except Exception as e:
         logger.error(f"Error in update_comparison: {str(e)}")
-        return html.Div(f"Error: {str(e)}")
+        return html.Div("Unable to compare those symbols right now.")
 
 
 if __name__ == "__main__":
