@@ -66,14 +66,14 @@ Sends notifications (e.g., Slack) on pipeline completion:
 
 ```yaml
 - `notify-pr`: runs for pull requests after test and security scan jobs
-- `notify-push`: runs for pushes after test, security scan, and build jobs
+- `notify-push`: runs for pushes after test and security scan jobs
 ```
 
 ### Setup Instructions
 
 #### Step 1: Create Workflow File
 
-Create `.github/workflows/ci-cd.yml` in your repository with the pipeline configuration provided in this guide.
+This pull request adds the reference workflow as `ci-cd-workflow.yml`. After merging, copy or move it to `.github/workflows/ci-cd.yml` to activate it.
 
 #### Step 2: Configure GitHub Secrets
 
@@ -161,14 +161,13 @@ docker push "$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
 
 ### Environment Variables for CI/CD
 
-Ensure these environment variables are set in your CI/CD platform:
+The reference workflow already sets test-only values for `FLASK_ENV`, `DATABASE_URL`, and `REDIS_URL` inline for the pytest step. Configure external CI/CD variables only for values your environment must supply, such as production logging or deployment-specific settings:
 
 | Variable | Value |
 | --- | --- |
-| `FLASK_ENV` | `testing` (for tests), `production` (for deploy) |
-| `DATABASE_URL` | PostgreSQL test database connection string |
-| `REDIS_URL` | Redis test instance connection string |
-| `LOG_LEVEL` | `DEBUG` (for tests), `INFO` (for production) |
+| `LOG_LEVEL` | `INFO` or your preferred production log level |
+| `DEPLOY_KEY` | Deployment credential for the production job |
+| `SLACK_WEBHOOK` | Optional Slack webhook for notifications |
 
 ### Monitoring Pipeline
 
