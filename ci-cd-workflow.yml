@@ -125,6 +125,7 @@ jobs:
       uses: docker/setup-buildx-action@885d1462b80bc1c1c7f0b00334ad271f09369c55 # v2
     
     - name: Log in to Container Registry
+      if: vars.ENABLE_IMAGE_PUSH == 'true'
       uses: docker/login-action@465a07811f14bebb1938fbed4728c6a1ff8901fc # v2
       with:
         registry: ${{ env.REGISTRY }}
@@ -132,6 +133,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Extract metadata
+      if: vars.ENABLE_IMAGE_PUSH == 'true'
       id: meta
       uses: docker/metadata-action@818d4b7b91585d195f67373fd9cb0332e31a7175 # v4
       with:
@@ -140,12 +142,20 @@ jobs:
           type=ref,event=branch
           type=sha
     
-    - name: Build and push Docker image
+    - name: Build Docker image locally
+      if: vars.ENABLE_IMAGE_PUSH != 'true'
       uses: docker/build-push-action@0a97817b6ade9f46837855d676c4cca3a2471fc9 # v4
       with:
         context: .
-        load: ${{ vars.ENABLE_IMAGE_PUSH != 'true' }}
-        push: ${{ vars.ENABLE_IMAGE_PUSH == 'true' }}
+        load: true
+        tags: ai-stock-analyzer:ci
+
+    - name: Build and push Docker image
+      if: vars.ENABLE_IMAGE_PUSH == 'true'
+      uses: docker/build-push-action@0a97817b6ade9f46837855d676c4cca3a2471fc9 # v4
+      with:
+        context: .
+        push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
 
@@ -210,7 +220,6 @@ jobs:
       with:
         status: ${{ steps.status.outputs.status }}
         text: 'Build and Test Pipeline: ${{ steps.status.outputs.status }}'
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
 
@@ -238,6 +247,5 @@ jobs:
       with:
         status: ${{ steps.status.outputs.status }}
         text: 'Build and Test Pipeline: ${{ steps.status.outputs.status }}'
-        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}

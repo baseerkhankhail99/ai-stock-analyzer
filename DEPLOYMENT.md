@@ -62,7 +62,12 @@ Deploys to production when code is pushed to main branch.
 ```
 
 #### 6. **Notify Job**
-Sends notifications (e.g., Slack) on pipeline completion.
+Sends notifications (e.g., Slack) on pipeline completion:
+
+```yaml
+- `notify-pr`: runs for pull requests after test and security scan jobs
+- `notify-push`: runs for pushes after test, security scan, and build jobs
+```
 
 ### Setup Instructions
 
