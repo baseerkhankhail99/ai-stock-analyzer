@@ -29,7 +29,7 @@ Performs security audits on code and dependencies.
 
 ```yaml
 - Bandit: scans for common security issues
-- Safety: checks dependencies for known vulnerabilities
+- pip-audit: checks runtime dependencies for known vulnerabilities
 ```
 
 #### 3. **Build Job**
@@ -136,7 +136,7 @@ isort --check-only .
 # Run security scans
 pip install pipx
 python -m pipx run --spec bandit==1.9.4 bandit -r . --severity-level low --confidence-level low
-python -m pipx run --spec safety==2.3.5 safety check -r requirements.txt
+python -m pipx run --spec pip-audit==2.10.1 pip-audit -r requirements.txt
 ```
 
 ### Docker Build & Push
@@ -213,7 +213,7 @@ View workflow runs in GitHub:
    - Review and test updated dependencies before merging
 
 3. **Monitor security:**
-   - Review Bandit and Safety reports regularly
+   - Review Bandit and pip-audit reports regularly
    - Fix security issues before production deployment
 
 4. **Optimize build times:**

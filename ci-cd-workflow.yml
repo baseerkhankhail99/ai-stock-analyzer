@@ -105,8 +105,8 @@ jobs:
         python -m pipx run --spec bandit==1.9.4 bandit -r . -f json -o bandit-report.json
         python -m pipx run --spec bandit==1.9.4 bandit -r . --severity-level low --confidence-level low
     
-    - name: Check dependencies with Safety
-      run: python -m pipx run --spec safety==2.3.5 safety check -r requirements.txt
+    - name: Check dependencies with pip-audit
+      run: python -m pipx run --spec pip-audit==2.10.1 pip-audit -r requirements.txt
 
   build:
     name: Build Docker Image
