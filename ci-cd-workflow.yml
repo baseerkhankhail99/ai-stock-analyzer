@@ -106,7 +106,9 @@ jobs:
         bandit -r . --severity-level low --confidence-level low
     
     - name: Check dependencies with Safety
-      run: safety check -r requirements.txt
+      run: |
+        safety check -r requirements.txt
+        safety check
 
   build:
     name: Build Docker Image
@@ -190,7 +192,7 @@ jobs:
     name: Notify PR Completion
     runs-on: ubuntu-latest
     needs: [test, security-scan]
-    if: github.event_name == 'pull_request' && always()
+    if: github.event_name == 'pull_request' && !cancelled()
 
     steps:
     - name: Determine build status
@@ -217,7 +219,7 @@ jobs:
     name: Notify Push Completion
     runs-on: ubuntu-latest
     needs: [test, security-scan, build]
-    if: github.event_name == 'push' && always()
+    if: github.event_name == 'push' && !cancelled()
     
     steps:
     - name: Determine build status
