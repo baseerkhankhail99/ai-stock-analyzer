@@ -101,7 +101,7 @@ Edit the `deploy-staging` and `deploy-production` jobs with your actual deployme
 
 **Kubernetes Example:**
 ```bash
-kubectl apply -f k8s/staging/ --kubeconfig=${{ secrets.KUBE_CONFIG }}
+kubectl apply -f k8s/staging/ --kubeconfig="$KUBE_CONFIG_PATH"
 ```
 
 **Docker Compose Example:**
