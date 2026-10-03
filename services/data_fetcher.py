@@ -23,8 +23,12 @@ class StockDataFetcher:
         """Fetch real-time stock price using yfinance"""
         try:
             ticker = yf.Ticker(symbol)
-            data = ticker.history(period="1d")
-            info = ticker.info
+            data = ticker.history(period="5d")
+            try:
+                info = ticker.info or {}
+            except Exception as info_error:
+                logger.warning(f"Could not fetch info for {symbol}: {info_error}")
+                info = {}
 
             if data.empty:
                 logger.warning(f"No data found for {symbol}")
@@ -56,6 +60,8 @@ class StockDataFetcher:
             start_date = end_date - timedelta(days=days)
 
             data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
             return data
         except Exception as e:
             logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
@@ -168,6 +174,8 @@ class CryptoDataFetcher:
             start_date = end_date - timedelta(days=days)
 
             data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
             return data
         except Exception as e:
             logger.error(
