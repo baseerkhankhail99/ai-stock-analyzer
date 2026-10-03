@@ -1,7 +1,7 @@
 import logging
 import os
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, redirect
 from flask_cors import CORS
 
 from config import config
@@ -40,14 +40,31 @@ def create_app(config_name=None):
         logger.error(f"Internal server error: {str(error)}")
         return jsonify({"error": "Internal server error"}), 500
 
-    # Create tables
+    # Create tables (log and continue if the database is temporarily unreachable)
     with app.app_context():
-        db.create_all()
-        logger.info("Database tables created/verified")
+        try:
+            db.create_all()
+            logger.info("Database tables created/verified")
+        except Exception as exc:
+            logger.error("Could not create database tables: %s", exc)
+
+    # Mount the Dash dashboard on the same WSGI app
+    dashboard_enabled = app.config.get("ENABLE_DASHBOARD", True)
+    if dashboard_enabled:
+        try:
+            from dashboard import DASH_BASE_PATH, init_dashboard
+
+            init_dashboard(app)
+            app.config["DASHBOARD_URL"] = DASH_BASE_PATH
+        except Exception as exc:
+            dashboard_enabled = False
+            logger.error("Dashboard could not be mounted: %s", exc)
 
     # Root endpoint
     @app.route("/", methods=["GET"])
     def index():
+        if dashboard_enabled:
+            return redirect(app.config["DASHBOARD_URL"])
         return (
             jsonify(
                 {
@@ -73,7 +90,7 @@ def create_app(config_name=None):
 if __name__ == "__main__":
     app = create_app()
     host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 7860))
     debug = os.getenv("FLASK_DEBUG", "False").lower() == "true"
 
     app.run(host=host, port=port, debug=debug)

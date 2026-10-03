@@ -130,30 +130,35 @@ def test_dashboard_uses_timeout_helper_for_all_http_gets():
 
 def test_slack_notifications_are_skipped_without_secret():
     workflow_lines = read_source(".github/workflows/ci-cd.yml").splitlines()
-    slack_conditions = []
+    slack_steps = 0
 
     for index, line in enumerate(workflow_lines):
-        if line.strip() == "- name: Notify Slack (optional)":
-            for next_line in workflow_lines[index + 1 :]:
-                stripped = next_line.strip()
-                if stripped.startswith("- name:"):
-                    break
-                if stripped.startswith("if:"):
-                    condition = stripped.removeprefix("if:").strip()
-                    if condition.startswith("${{") and condition.endswith("}}"):
-                        condition = condition[3:-2].strip()
-                    slack_conditions.append(condition)
-                    break
+        if line.strip() != "- name: Notify Slack (optional)":
+            continue
+        slack_steps += 1
+        step_lines = []
+        for next_line in workflow_lines[index + 1 :]:
+            if next_line.strip().startswith("- name:") or (
+                next_line.strip() and not next_line.startswith("      ")
+            ):
+                break
+            step_lines.append(next_line.strip())
 
-    ensure(
-        slack_conditions, "Expected to find at least one Slack notification condition."
-    )
-    for condition in slack_conditions:
-        normalized = condition.replace('"', "'").replace(" ", "")
+        conditions = [x for x in step_lines if x.startswith("if:")]
+        ensure(len(conditions) == 1, "Expected one Slack step condition.")
+        normalized = conditions[0].replace('"', "'").replace(" ", "")
+        ensure("always()" in normalized, "Expected Slack step to always evaluate.")
         ensure(
-            "always()" in normalized, "Expected Slack step to always evaluate post-job."
+            "env.SLACK_WEBHOOK_URL!=''" in normalized,
+            "Expected Slack step to require a non-empty webhook env var.",
         )
         ensure(
-            "secrets.SLACK_WEBHOOK!=''" in normalized,
-            "Expected Slack step to require a non-empty SLACK_WEBHOOK secret.",
+            "secrets." not in normalized,
+            "secrets context is not valid in step-level if conditions.",
         )
+        ensure(
+            "continue-on-error: true" in step_lines,
+            "Expected Slack step to use continue-on-error.",
+        )
+
+    ensure(slack_steps >= 1, "Expected to find Slack notification steps.")

@@ -6,7 +6,6 @@ from typing import Dict, List, Optional
 import pandas as pd
 import requests
 import yfinance as yf
-from alpha_vantage.timeseries import TimeSeries
 
 from models import Stock, StockPrice, db
 

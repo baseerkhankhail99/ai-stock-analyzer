@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timedelta
 
 import dash
@@ -12,11 +13,22 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 10
 
-# Initialize Dash app
-app = dash.Dash(__name__)
+DASH_BASE_PATH = os.getenv("DASH_BASE_PATH", "/dashboard/")
 
-# API base URL
-API_BASE_URL = "http://localhost:5000/api"
+# Initialize Dash app (attached to a Flask server later via init_dashboard)
+app = dash.Dash(__name__, server=False, url_base_pathname=DASH_BASE_PATH)
+
+# API base URL (same origin as the dashboard by default)
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    f"http://127.0.0.1:{os.getenv('PORT', '7860')}/api",
+)
+
+
+def init_dashboard(flask_app):
+    """Mount the dashboard on an existing Flask app."""
+    app.init_app(flask_app)
+    return app
 
 
 def fetch_api_response(endpoint, params=None):
@@ -715,4 +727,11 @@ def update_comparison(n_clicks, symbol1, symbol2):
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8050)
+    from flask import Flask
+
+    init_dashboard(Flask(__name__))
+    app.run(
+        debug=os.getenv("DASH_DEBUG", "False").lower() == "true",
+        host=os.getenv("DASH_HOST", "127.0.0.1"),
+        port=int(os.getenv("DASH_PORT", "8050")),
+    )

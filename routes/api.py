@@ -1,11 +1,12 @@
 import logging
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from models import AnalyticsReport, Forecast, Stock, StockPrice, TechnicalIndicator, db
 from services.analytics_engine import AnalyticsEngine
+from services.cache import AppCache
 from services.data_fetcher import CryptoDataFetcher, StockDataFetcher
 from services.forecast_engine import StockForecastEngine
 from services.technical_analyzer import TechnicalAnalyzer
@@ -20,6 +21,17 @@ crypto_fetcher = CryptoDataFetcher()
 forecast_engine = StockForecastEngine()
 technical_analyzer = TechnicalAnalyzer()
 analytics_engine = AnalyticsEngine()
+
+PRICE_CACHE_TTL_SECONDS = 60
+
+
+def get_cache():
+    """Return the app cache (Redis if configured and reachable, else memory)."""
+    cache = current_app.extensions.get("app_cache")
+    if cache is None:
+        cache = AppCache(current_app.config.get("REDIS_URL"))
+        current_app.extensions["app_cache"] = cache
+    return cache
 
 
 def internal_server_error(log_message, client_message, exc):
@@ -44,8 +56,14 @@ def get_json_payload():
 def get_stock_price(symbol):
     """Get real-time stock price"""
     try:
+        cache = get_cache()
+        cache_key = f"price:{symbol.upper()}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached), 200
         price_data = data_fetcher.fetch_real_time_price(symbol)
         if price_data:
+            cache.set(cache_key, price_data, PRICE_CACHE_TTL_SECONDS)
             return jsonify(price_data), 200
         return jsonify({"error": "Stock not found"}), 404
     except Exception as exc:

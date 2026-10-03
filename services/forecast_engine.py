@@ -5,17 +5,30 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-from prophet import Prophet
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.optimizers import Adam
 
 from models import Forecast, Stock, StockPrice, db
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
+
+try:
+    from prophet import Prophet
+except Exception:  # Prophet is optional (heavy dependency)
+    Prophet = None
+    logger.info("Prophet not installed; Prophet forecasts are disabled")
+
+
+def _load_keras():
+    """Lazily import TensorFlow/Keras; return None if unavailable."""
+    try:
+        from tensorflow.keras.layers import LSTM, Dense, Dropout
+        from tensorflow.keras.models import Sequential
+        from tensorflow.keras.optimizers import Adam
+    except Exception:
+        return None
+    return Sequential, LSTM, Dense, Dropout, Adam
 
 
 class StockForecastEngine:
@@ -64,6 +77,9 @@ class StockForecastEngine:
 
     def forecast_prophet(self, symbol: str, forecast_days: int = 30) -> List[Dict]:
         """Prophet-based forecasting"""
+        if Prophet is None:
+            logger.warning("Prophet is not installed; skipping Prophet forecast")
+            return []
         try:
             data = self.get_historical_data(symbol, days=365)
             if data.empty:
@@ -98,6 +114,11 @@ class StockForecastEngine:
 
     def forecast_lstm(self, symbol: str, forecast_days: int = 30) -> List[Dict]:
         """LSTM neural network forecasting"""
+        keras = _load_keras()
+        if keras is None:
+            logger.warning("TensorFlow is not installed; skipping LSTM forecast")
+            return []
+        Sequential, LSTM, Dense, Dropout, Adam = keras
         try:
             data = self.get_historical_data(symbol, days=365)
             if data.empty or len(data) < self.lookback_days:
