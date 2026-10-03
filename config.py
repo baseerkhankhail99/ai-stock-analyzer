@@ -1,9 +1,50 @@
 import os
 from datetime import timedelta
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+DEFAULT_SQLITE_URL = "sqlite:///stock_analyzer.db"
+LOCAL_DB_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
+
+
+def normalize_database_url(url):
+    """Return a SQLAlchemy 2 compatible database URL.
+
+    - Falls back to a local SQLite file when no URL is provided.
+    - Rewrites the legacy ``postgres://`` scheme to ``postgresql://``.
+    - Adds ``sslmode=require`` for remote PostgreSQL hosts (Neon, Supabase)
+      unless the URL already specifies an ``sslmode``.
+    """
+    if not url or not url.strip():
+        return DEFAULT_SQLITE_URL
+
+    url = url.strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+
+    parts = urlsplit(url)
+    if parts.scheme.startswith("postgresql"):
+        query = parse_qs(parts.query, keep_blank_values=True)
+        if "sslmode" not in query and (parts.hostname or "") not in LOCAL_DB_HOSTS:
+            query["sslmode"] = ["require"]
+            url = urlunsplit(parts._replace(query=urlencode(query, doseq=True)))
+
+    return url
+
+
+def build_engine_options(database_url):
+    """Small connection pool for free-tier PostgreSQL; none for SQLite."""
+    if database_url.startswith("sqlite"):
+        return {}
+    return {
+        "pool_size": 3,
+        "max_overflow": 2,
+        "pool_recycle": 1800,
+        "pool_pre_ping": True,
+    }
 
 
 class Config:
@@ -85,7 +126,7 @@ class Config:
 
     # Caching
     CACHE_DEFAULT_TIMEOUT = 300
-    CACHE_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
+    CACHE_REDIS_URL = os.getenv("REDIS_URL") or None
 
     # Session
     PERMANENT_SESSION_LIFETIME = timedelta(days=7)
@@ -115,20 +156,15 @@ class ProductionConfig(Config):
     TESTING = False
     LOG_LEVEL = "INFO"
 
-    # Enforce secure settings in production
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        "pool_size": 20,
-        "pool_recycle": 3600,
-        "pool_pre_ping": True,
-    }
-
 
 class TestingConfig(Config):
     """Testing configuration"""
 
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
-    REDIS_URL = "redis://localhost:6379/2"
+    SQLALCHEMY_ENGINE_OPTIONS = {}
+    REDIS_URL = None
+    CACHE_REDIS_URL = None
     WTF_CSRF_ENABLED = False
 
 

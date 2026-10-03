@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    FLASK_ENV=production \
+    PORT=7860
+
+# Hugging Face Spaces runs containers as uid 1000
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
+WORKDIR /home/user/app
+
+COPY --chown=user requirements-space.txt .
+RUN pip install --user -r requirements-space.txt
+
+COPY --chown=user . .
+
+EXPOSE 7860
+
+# gthread workers: the dashboard calls the API on the same server, so a
+# worker must be able to serve a request while another one is in progress.
+CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "2", "--worker-class", "gthread", "--threads", "4", "--timeout", "120", "app:create_app()"]

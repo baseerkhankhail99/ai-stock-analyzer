@@ -1,0 +1,24 @@
+# Lean runtime dependencies for single-service free-tier deployment
+# (Hugging Face Spaces, Python 3.11/3.12). No TensorFlow, no dev tooling.
+# Optional: pip install prophet==1.1.5  -> enables Prophet forecasts.
+Flask==3.1.3
+Werkzeug==3.1.6
+Flask-SQLAlchemy==3.1.1
+Flask-CORS==6.0.1
+python-dotenv==1.2.2
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.13.1
+scikit-learn==1.5.2
+statsmodels==0.14.4
+ta==0.11.0
+yfinance==0.2.54
+requests==2.33.0
+dash==3.2.0
+plotly==5.24.1
+gunicorn==23.0.0
+redis==5.0.8
+python-dateutil==2.9.0.post0
+pytz==2024.2

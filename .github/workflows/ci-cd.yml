@@ -15,31 +15,6 @@ jobs:
     name: Test & Lint
     runs-on: ubuntu-latest
     
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: stock_user
-          POSTGRES_PASSWORD: stock_password
-          POSTGRES_DB: stock_analyzer
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
     
@@ -52,7 +27,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r requirements-space.txt -r requirements-dev.txt
     
     - name: Lint with Flake8
       run: |
@@ -97,7 +72,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r requirements-space.txt
         pip install pipx
     
     - name: Run Bandit security scan
@@ -106,7 +81,7 @@ jobs:
         python -m pipx run --spec bandit==1.9.4 bandit -r . --severity-level low --confidence-level low
     
     - name: Check dependencies with pip-audit
-      run: python -m pipx run --spec pip-audit==2.10.1 pip-audit -r requirements.txt
+      run: python -m pipx run --spec pip-audit==2.10.1 pip-audit -r requirements-space.txt
 
   build:
     name: Build Docker Image
@@ -147,6 +122,7 @@ jobs:
       uses: docker/build-push-action@0a97817b6ade9f46837855d676c4cca3a2471fc9 # v4
       with:
         context: .
+        file: ./Dockerfile.space
         load: true
         tags: ${{ env.IMAGE_NAME }}:ci
 
@@ -155,6 +131,7 @@ jobs:
       uses: docker/build-push-action@0a97817b6ade9f46837855d676c4cca3a2471fc9 # v4
       with:
         context: .
+        file: ./Dockerfile.space
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
@@ -200,6 +177,8 @@ jobs:
   notify-pr:
     name: Notify PR Completion
     runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
     needs: [test, security-scan]
     if: github.event_name == 'pull_request' && !cancelled()
 
@@ -215,7 +194,8 @@ jobs:
         fi
 
     - name: Notify Slack (optional)
-      if: always() && secrets.SLACK_WEBHOOK != ''
+      if: always() && env.SLACK_WEBHOOK_URL != ''
+      continue-on-error: true
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}
@@ -226,6 +206,8 @@ jobs:
   notify-push:
     name: Notify Push Completion
     runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
     needs: [test, security-scan]
     if: github.event_name == 'push' && !cancelled()
     
@@ -241,7 +223,8 @@ jobs:
         fi
     
     - name: Notify Slack (optional)
-      if: always() && secrets.SLACK_WEBHOOK != ''
+      if: always() && env.SLACK_WEBHOOK_URL != ''
+      continue-on-error: true
       uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3.19.0
       with:
         status: ${{ steps.status.outputs.status }}

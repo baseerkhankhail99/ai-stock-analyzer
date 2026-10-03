@@ -6,7 +6,7 @@ python-dotenv==1.0.0
 
 # Database
 SQLAlchemy==2.0.19
-psycopg2-binary==2.9.6
+psycopg2-binary==2.9.10
 alembic==1.11.1
 
 # Data Processing & Analysis
