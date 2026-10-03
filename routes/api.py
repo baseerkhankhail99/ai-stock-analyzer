@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -5,6 +6,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from models import AnalyticsReport, Forecast, Stock, StockPrice, TechnicalIndicator, db
+from services import market_analysis, market_data
 from services.analytics_engine import AnalyticsEngine
 from services.cache import AppCache
 from services.data_fetcher import CryptoDataFetcher, StockDataFetcher
@@ -23,6 +25,9 @@ technical_analyzer = TechnicalAnalyzer()
 analytics_engine = AnalyticsEngine()
 
 PRICE_CACHE_TTL_SECONDS = 60
+FORECAST_CACHE_TTL_SECONDS = 600
+MAX_FORECAST_DAYS = 90
+MAX_COMPARE_SYMBOLS = 5
 
 
 def get_cache():
@@ -151,20 +156,187 @@ def get_stock_history(symbol):
         )
 
 
+# ============= MARKET OVERVIEW / ANALYSIS ENDPOINTS =============
+
+
+def _history_for_symbol(symbol):
+    return market_data.fetch_history_frame(symbol, "2y", "1d", cache=get_cache())
+
+
+@api.route("/market/overview", methods=["GET"])
+@cross_origin()
+def market_overview():
+    """Grouped overview of commodities, crypto, stocks and indices"""
+    try:
+        cache = get_cache()
+        cached = cache.get("market:overview")
+        if cached is not None:
+            return jsonify(cached), 200
+        overview = market_data.build_overview()
+        cache.set("market:overview", overview, market_data.OVERVIEW_TTL_SECONDS)
+        return jsonify(overview), 200
+    except Exception as exc:
+        return internal_server_error(
+            "Error building market overview", "Unable to load market overview.", exc
+        )
+
+
+@api.route("/market/momentum", methods=["GET"])
+@cross_origin()
+def market_momentum():
+    """Computed (unofficial) market momentum score"""
+    try:
+        cache = get_cache()
+        cached = cache.get("market:momentum")
+        if cached is not None:
+            return jsonify(cached), 200
+        closes = market_data.fetch_closes(market_data.all_symbols(), "6mo", "1d")
+        summary = market_analysis.momentum_summary(closes) if not closes.empty else {}
+        if not summary:
+            return jsonify({"error": "Unable to compute momentum"}), 502
+        cache.set("market:momentum", summary, market_data.HISTORY_TTL_SECONDS)
+        return jsonify(summary), 200
+    except Exception as exc:
+        return internal_server_error(
+            "Error computing momentum", "Unable to compute momentum.", exc
+        )
+
+
+@api.route("/market/history/<symbol>", methods=["GET"])
+@cross_origin()
+def market_history(symbol):
+    """OHLCV plus indicators for a period (1D, 5D, 1M, 6M, 1Y, 5Y)"""
+    try:
+        symbol = market_data.normalize_symbol(symbol)
+        label = request.args.get("period", "1Y").upper()
+        if label not in market_data.PERIOD_CONFIG:
+            return jsonify({"error": "Invalid period"}), 400
+        period, interval, keep_days = market_data.PERIOD_CONFIG[label]
+        frame = market_data.fetch_history_frame(
+            symbol, period, interval, cache=get_cache()
+        )
+        if frame.empty:
+            return jsonify({"error": "No data found"}), 404
+        frame = market_analysis.add_indicators(frame)
+        if keep_days:
+            frame = frame[frame.index >= frame.index[-1] - timedelta(days=keep_days)]
+        frame = frame.reset_index().rename(columns={"index": "date"})
+        frame["date"] = frame["date"].map(lambda ts: ts.isoformat())
+        records = json.loads(frame.to_json(orient="records"))
+        return jsonify({"symbol": symbol, "period": label, "data": records}), 200
+    except Exception as exc:
+        return internal_server_error(
+            f"Error fetching market history for {symbol}",
+            "Unable to fetch history.",
+            exc,
+        )
+
+
+@api.route("/market/analysis/<symbol>", methods=["GET"])
+@cross_origin()
+def market_asset_analysis(symbol):
+    """Trading signal and analytics (risk metrics + chart series)"""
+    try:
+        symbol = market_data.normalize_symbol(symbol)
+        frame = _history_for_symbol(symbol)
+        if frame.empty:
+            return jsonify({"error": "No data found"}), 404
+        analytics = market_analysis.analytics_metrics(frame["close"])
+        if not analytics:
+            return jsonify({"error": "Not enough data"}), 404
+        return (
+            jsonify(
+                {
+                    "symbol": symbol,
+                    "signal": market_analysis.trading_signal(frame),
+                    "analytics": analytics,
+                }
+            ),
+            200,
+        )
+    except Exception as exc:
+        return internal_server_error(
+            f"Error analysing {symbol}", "Unable to analyse asset.", exc
+        )
+
+
+@api.route("/market/compare", methods=["GET"])
+@cross_origin()
+def market_compare():
+    """Compare several assets fetched in a single batch request"""
+    try:
+        symbols = [
+            market_data.normalize_symbol(s)
+            for s in request.args.get("symbols", "").split(",")
+            if s.strip()
+        ]
+        symbols = list(dict.fromkeys(symbols))
+        if len(symbols) < 2 or len(symbols) > MAX_COMPARE_SYMBOLS:
+            return (
+                jsonify({"error": f"Provide 2-{MAX_COMPARE_SYMBOLS} symbols"}),
+                400,
+            )
+        label = request.args.get("period", "1Y").upper()
+        if label not in ("1M", "6M", "1Y", "5Y"):
+            return jsonify({"error": "Invalid period"}), 400
+        period = {"1M": "1mo", "6M": "6mo", "1Y": "1y", "5Y": "5y"}[label]
+        cache = get_cache()
+        cache_key = f"compare:{','.join(symbols)}:{label}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached), 200
+        closes = market_data.fetch_closes(symbols, period, "1d")
+        if symbols[0] not in closes.columns or closes.shape[1] < 2:
+            return jsonify({"error": "Unable to compare the requested assets"}), 502
+        result = market_analysis.compare_assets(closes, symbols[0])
+        result["missing"] = [s for s in symbols if s not in closes.columns]
+        cache.set(cache_key, result, market_data.HISTORY_TTL_SECONDS)
+        return jsonify(result), 200
+    except Exception as exc:
+        return internal_server_error(
+            "Error comparing assets", "Unable to compare assets.", exc
+        )
+
+
 # ============= FORECASTING ENDPOINTS =============
+
+
+def _jsonable(data):
+    return json.loads(
+        json.dumps(
+            data, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)
+        )
+    )
 
 
 @api.route("/stocks/<symbol>/forecast", methods=["GET"])
 @cross_origin()
 def get_forecast(symbol):
-    """Get stock price forecast"""
+    """Compute (or return cached) on-demand forecast with AI insight"""
     try:
+        symbol = market_data.normalize_symbol(symbol)
         days = request.args.get("days", 30, type=int)
-        forecast_data = forecast_engine.generate_all_forecasts(symbol, days)
+        days = max(1, min(days, MAX_FORECAST_DAYS))
+        cache = get_cache()
+        cache_key = f"forecast:{symbol}:{days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return jsonify(cached), 200
 
-        if forecast_data:
-            return jsonify(forecast_data), 200
-        return jsonify({"error": "Could not generate forecast"}), 500
+        forecast_data = forecast_engine.generate_all_forecasts(symbol, days)
+        if not forecast_data or not any(
+            forecast_data.get(m) for m in ("ensemble", "arima", "prophet")
+        ):
+            return jsonify({"error": "Unable to compute forecast"}), 502
+
+        history = forecast_engine.get_historical_data(symbol, days=365)
+        forecast_data["days"] = days
+        forecast_data["insight"] = market_analysis.generate_insight(
+            forecast_data, history, days, symbol
+        )
+        payload = _jsonable(forecast_data)
+        cache.set(cache_key, payload, FORECAST_CACHE_TTL_SECONDS)
+        return jsonify(payload), 200
     except Exception as exc:
         return internal_server_error(
             f"Error generating forecast for {symbol}",
