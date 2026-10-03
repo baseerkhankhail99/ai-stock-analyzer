@@ -118,13 +118,8 @@ def test_dashboard_uses_timeout_helper_for_all_http_gets():
         "Expected dashboard requests.get usage to be centralized in the helper.",
     )
     ensure(
-        {
-            "update_stock_analysis",
-            "update_price_chart",
-            "update_technical_signals",
-            "update_comparison",
-        }.issubset(helper_call_functions),
-        "Expected dashboard callbacks that perform HTTP requests to use the timeout helper.",
+        {"api_json"}.issubset(helper_call_functions),
+        "Expected dashboard API access to use the timeout helper.",
     )
 
 

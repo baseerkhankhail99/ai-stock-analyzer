@@ -28,7 +28,7 @@ ta==0.10.2
 TA-Lib==0.6.8
 
 # Data Fetching
-yfinance==0.2.28
+yfinance==0.2.54
 alpha-vantage==2.3.1
 finnhub-python==2.2.1
 requests==2.31.0
