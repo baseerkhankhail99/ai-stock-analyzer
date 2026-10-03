@@ -1,18 +1,43 @@
-"""Batch market data helpers (overview, history, multi-symbol closes)."""
+"""Market data service: overview, history and closes with resilient caching.
+
+Data comes from the provider chain in ``services.providers``. Every successful
+result is also kept as a long-lived "last known good" snapshot (memory cache and
+database) that is served with ``stale: true`` when all providers fail.
+"""
 
 import logging
+import re
+import threading
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Sequence
 
 import pandas as pd
-import yfinance as yf
+from flask import current_app, has_app_context
+
+from services import providers
+from services.cache import get_app_cache
+from services.snapshots import load_snapshot, save_snapshot
 
 logger = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT_SECONDS = 10
 OVERVIEW_TTL_SECONDS = 60
+OVERVIEW_FAILURE_TTL_SECONDS = 30
 HISTORY_TTL_SECONDS = 900
-DELAYED_WARNING = "Data may be delayed up to 15 minutes"
+HISTORY_FAILURE_TTL_SECONDS = 60
+MOMENTUM_TTL_SECONDS = 900
+STALE_TTL_SECONDS = 7 * 24 * 3600
+HISTORY_DAYS = 730
+SYMBOL_PATTERN = re.compile(r"^[A-Z0-9^.=\-]{1,15}$")
+MAX_WORKERS = 6
+MIN_MOMENTUM_ASSETS = 3
+DELAYED_WARNING = (
+    "Prices come from free sources: crypto is delayed ~1-2 min, stocks and "
+    "commodities may be delayed up to 15 min or end-of-day. Not real-time."
+)
+OVERVIEW_KEY = "market:overview"
+OVERVIEW_LKG_KEY = "market:overview:lkg"
 
 ASSET_CATALOG: Dict[str, List[tuple]] = {
     "commodities": [
@@ -52,15 +77,20 @@ ASSET_NAMES: Dict[str, str] = {
     symbol: name for assets in ASSET_CATALOG.values() for symbol, name in assets
 }
 
-# period label -> (yfinance period, interval, calendar days to keep or None)
-PERIOD_CONFIG = {
-    "1D": ("1d", "5m", None),
-    "5D": ("5d", "30m", None),
-    "1M": ("2y", "1d", 30),
-    "6M": ("2y", "1d", 182),
-    "1Y": ("2y", "1d", 365),
-    "5Y": ("5y", "1wk", None),
-}
+# period label -> calendar days of the shared daily history to show (None = all)
+PERIOD_CONFIG = {"1M": 30, "3M": 91, "6M": 182, "1Y": 365, "2Y": None}
+
+LOCK_STRIPES = 64
+_locks = [threading.Lock() for _ in range(LOCK_STRIPES)]
+
+
+def _lock_for(key: str) -> threading.Lock:
+    """Bounded pool of locks (striped by key) so memory cannot grow per symbol."""
+    return _locks[zlib.crc32(key.encode()) % LOCK_STRIPES]
+
+
+def is_valid_symbol(symbol: str) -> bool:
+    return bool(SYMBOL_PATTERN.match(symbol or ""))
 
 
 def all_symbols() -> List[str]:
@@ -71,38 +101,26 @@ def normalize_symbol(symbol: str) -> str:
     return (symbol or "").strip().upper()
 
 
-def download_prices(symbols: Sequence[str], period: str, interval: str):
-    """Single batched yfinance request for many symbols."""
-    return yf.download(
-        tickers=list(symbols),
-        period=period,
-        interval=interval,
-        group_by="ticker",
-        progress=False,
-        threads=True,
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def extract_frame(raw, symbol: str) -> pd.DataFrame:
-    """Return the OHLCV frame of one symbol from a batch download result."""
-    if raw is None or getattr(raw, "empty", True):
-        return pd.DataFrame()
-    if isinstance(raw.columns, pd.MultiIndex):
-        if symbol in raw.columns.get_level_values(0):
-            frame = raw[symbol]
-        elif symbol in raw.columns.get_level_values(1):
-            frame = raw.xs(symbol, axis=1, level=1)
-        else:
-            return pd.DataFrame()
-    else:
-        frame = raw
-    if "Close" not in frame.columns:
-        return pd.DataFrame()
-    frame = frame.dropna(subset=["Close"]).copy()
-    if getattr(frame.index, "tz", None) is not None:
-        frame.index = frame.index.tz_localize(None)
-    return frame
+def age_message(as_of: Optional[str]) -> str:
+    """Human readable notice for stale data."""
+    try:
+        then = datetime.strptime(as_of, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        minutes = max(0, int((datetime.now(timezone.utc) - then).total_seconds() // 60))
+        age = (
+            f"{minutes} minutes ago" if minutes < 120 else f"{minutes // 60} hours ago"
+        )
+    except (TypeError, ValueError):
+        age = "earlier"
+    return f"Showing data from {age} — live source unavailable"
+
+
+# ------------------------------------------------------------------ overview
 
 
 def _failed_asset(symbol: str, name: str) -> Dict:
@@ -113,69 +131,117 @@ def _failed_asset(symbol: str, name: str) -> Dict:
         "change": None,
         "change_pct": None,
         "sparkline": [],
+        "source": None,
         "error": True,
     }
 
 
-def _asset_snapshot(raw, symbol: str, name: str) -> Dict:
-    frame = extract_frame(raw, symbol)
-    closes = [float(v) for v in frame["Close"].tolist()] if not frame.empty else []
-    if not closes:
-        raise ValueError("no price data")
-    price = closes[-1]
-    previous = closes[-2] if len(closes) > 1 else price
-    change = price - previous
-    change_pct = (change / previous * 100) if previous else 0.0
+def _asset_from_quote(symbol: str, name: str, quote: Dict, source: str) -> Dict:
     return {
         "symbol": symbol,
         "name": name,
-        "price": round(price, 4),
-        "change": round(change, 4),
-        "change_pct": round(change_pct, 2),
-        "sparkline": [round(v, 4) for v in closes[-5:]],
+        "price": round(float(quote["price"]), 4),
+        "change": round(float(quote.get("change") or 0.0), 4),
+        "change_pct": round(float(quote.get("change_pct") or 0.0), 2),
+        "sparkline": [round(float(v), 4) for v in quote.get("sparkline") or []],
+        "source": source,
+        "as_of": quote.get("as_of") or "",
     }
 
 
-def build_overview(downloader: Optional[Callable] = None) -> Dict:
+def build_overview(fetcher: Optional[Callable] = None) -> Dict:
     """Overview of all known assets; failing assets never break the response."""
-    downloader = downloader or download_prices
+    fetcher = fetcher or providers.fetch_quotes
     try:
-        raw = downloader(all_symbols(), "5d", "1d")
+        quotes = fetcher(all_symbols())
     except Exception as exc:
-        logger.error("Batch overview download failed: %s", exc)
-        raw = None
+        logger.error("Overview fetch failed: %s", type(exc).__name__)
+        quotes = {}
 
     overview: Dict = {}
+    used: Dict[str, int] = {}
+    failed: List[str] = []
     for category, assets in ASSET_CATALOG.items():
         items = []
         for symbol, name in assets:
             try:
-                items.append(_asset_snapshot(raw, symbol, name))
-            except Exception as exc:
-                logger.warning("Overview data unavailable for %s: %s", symbol, exc)
+                quote, source = quotes[symbol]
+                items.append(_asset_from_quote(symbol, name, quote, source))
+                used[source] = used.get(source, 0) + 1
+            except (KeyError, TypeError, ValueError):
+                logger.warning("Overview data unavailable for %s", symbol)
                 items.append(_failed_asset(symbol, name))
+                failed.append(symbol)
         overview[category] = items
-    overview["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    overview["timestamp"] = utc_now_iso()
+    overview["as_of"] = overview["timestamp"]
+    overview["stale"] = False
     overview["delayed_warning"] = DELAYED_WARNING
+    overview["sources_status"] = {
+        "used": used,
+        "failed": failed,
+        "providers": providers.sources_status(),
+    }
     return overview
 
 
-def fetch_closes(
-    symbols: Sequence[str], period: str = "1y", interval: str = "1d"
-) -> pd.DataFrame:
-    """Close prices of many symbols from one batch request (failed ones omitted)."""
-    symbols = list(dict.fromkeys(symbols))
-    try:
-        raw = download_prices(symbols, period, interval)
-    except Exception as exc:
-        logger.error("Batch close download failed: %s", exc)
-        return pd.DataFrame()
-    columns = {}
-    for symbol in symbols:
-        frame = extract_frame(raw, symbol)
-        if not frame.empty:
-            columns[symbol] = frame["Close"].astype(float)
-    return pd.DataFrame(columns)
+def _iter_assets(overview: Dict):
+    for category in ASSET_CATALOG:
+        for item in overview.get(category) or []:
+            yield category, item
+
+
+def _has_prices(overview: Optional[Dict]) -> bool:
+    return bool(overview) and any(
+        not item.get("error") for _, item in _iter_assets(overview)
+    )
+
+
+def _merge_stale(overview: Dict, previous: Optional[Dict]) -> None:
+    """Fill failed assets from the last known good overview (flagged stale)."""
+    if not _has_prices(previous):
+        return
+    old = {item["symbol"]: item for _, item in _iter_assets(previous)}
+    for category in ASSET_CATALOG:
+        merged = []
+        for item in overview[category]:
+            earlier = old.get(item["symbol"])
+            if item.get("error") and earlier and not earlier.get("error"):
+                item = {**earlier, "stale": True}
+            merged.append(item)
+        overview[category] = merged
+
+
+def get_overview(cache=None, fetcher: Optional[Callable] = None) -> Dict:
+    """Overview with 60s caching and a stale last-known-good fallback."""
+    cache = cache or get_app_cache()
+    cached = cache.get(OVERVIEW_KEY)
+    if cached is not None:
+        return cached
+    with _lock_for("overview"):
+        cached = cache.get(OVERVIEW_KEY)
+        if cached is not None:
+            return cached
+        overview = build_overview(fetcher)
+        previous = cache.get(OVERVIEW_LKG_KEY) or load_snapshot("overview")
+        if _has_prices(overview):
+            _merge_stale(overview, previous)
+            cache.set(OVERVIEW_LKG_KEY, overview, STALE_TTL_SECONDS)
+            save_snapshot("overview", overview)
+            cache.set(OVERVIEW_KEY, overview, OVERVIEW_TTL_SECONDS)
+            return overview
+        if _has_prices(previous):
+            overview = {
+                **previous,
+                "stale": True,
+                "as_of": previous.get("timestamp"),
+                "sources_status": overview["sources_status"],
+            }
+        cache.set(OVERVIEW_KEY, overview, OVERVIEW_FAILURE_TTL_SECONDS)
+        return overview
+
+
+# ------------------------------------------------------------------- history
 
 
 def _frame_to_records(frame: pd.DataFrame) -> List[Dict]:
@@ -202,34 +268,90 @@ def records_to_frame(records: List[Dict]) -> pd.DataFrame:
     return frame.set_index("date")
 
 
-def fetch_history_frame(
-    symbol: str, period: str = "2y", interval: str = "1d", cache=None
-) -> pd.DataFrame:
-    """Lower-case OHLCV frame for one symbol, cached for 15 minutes."""
+def _history_result(entry: Optional[Dict], stale: bool) -> Dict:
+    if not entry:
+        return {"frame": pd.DataFrame(), "source": None, "stale": False, "as_of": None}
+    return {
+        "frame": records_to_frame(entry["records"]),
+        "source": entry.get("source"),
+        "stale": stale,
+        "as_of": entry.get("as_of"),
+    }
+
+
+def fetch_history(symbol: str, cache=None) -> Dict:
+    """Shared ~2y daily history of one symbol (cached 15 min, stale fallback).
+
+    Returns {"frame", "source", "stale", "as_of"}; the frame has lower-case
+    open/high/low/close/volume columns and is empty when nothing is available.
+    """
     symbol = normalize_symbol(symbol)
-    key = f"hist:{symbol}:{period}:{interval}"
-    if cache is not None:
+    cache = cache or get_app_cache()
+    key, lkg_key = f"hist:{symbol}", f"hist:lkg:{symbol}"
+    cached = cache.get(key)
+    if cached is not None:
+        return _history_result(cached, False)
+    with _lock_for(key):
         cached = cache.get(key)
         if cached is not None:
-            return records_to_frame(cached)
+            return _history_result(cached, False)
+        if cache.get(f"hist:fail:{symbol}") is None:
+            frame, source = providers.get_history(symbol, HISTORY_DAYS)
+            if not frame.empty:
+                entry = {
+                    "records": _frame_to_records(frame),
+                    "source": source,
+                    "as_of": utc_now_iso(),
+                }
+                cache.set(key, entry, HISTORY_TTL_SECONDS)
+                cache.set(lkg_key, entry, STALE_TTL_SECONDS)
+                save_snapshot(key, entry)
+                return _history_result(entry, False)
+            cache.set(f"hist:fail:{symbol}", True, HISTORY_FAILURE_TTL_SECONDS)
+        entry = cache.get(lkg_key) or load_snapshot(key)
+        return _history_result(entry, True)
 
-    frame = pd.DataFrame()
-    try:
-        frame = extract_frame(download_prices([symbol], period, interval), symbol)
-    except Exception as exc:
-        logger.warning("Batch history failed for %s: %s", symbol, exc)
-    if frame.empty:
-        try:
-            history = yf.Ticker(symbol).history(
-                period=period, interval=interval, timeout=REQUEST_TIMEOUT_SECONDS
-            )
-            frame = extract_frame(history, symbol)
-        except Exception as exc:
-            logger.error("History unavailable for %s: %s", symbol, exc)
-    if frame.empty:
-        return pd.DataFrame()
 
-    records = _frame_to_records(frame)
-    if cache is not None:
-        cache.set(key, records, HISTORY_TTL_SECONDS)
-    return records_to_frame(records)
+def fetch_history_frame(symbol: str, cache=None) -> pd.DataFrame:
+    """Lower-case OHLCV frame for one symbol (shared cached history)."""
+    return fetch_history(symbol, cache)["frame"]
+
+
+def fetch_closes(
+    symbols: Sequence[str], days: Optional[int] = None, cache=None
+) -> pd.DataFrame:
+    """Close prices of many symbols from the shared history (failed omitted)."""
+    symbols = list(dict.fromkeys(symbols))
+    cache = cache or get_app_cache()
+    app = current_app._get_current_object() if has_app_context() else None
+
+    def load(symbol: str) -> pd.DataFrame:
+        if app is None:
+            return fetch_history_frame(symbol, cache)
+        with app.app_context():
+            return fetch_history_frame(symbol, cache)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        frames = list(pool.map(load, symbols))
+    columns = {}
+    for symbol, frame in zip(symbols, frames):
+        if frame.empty:
+            continue
+        close = frame["close"].astype(float)
+        if days:
+            close = close[close.index >= close.index[-1] - pd.Timedelta(days=days)]
+        columns[symbol] = close
+    return pd.DataFrame(columns)
+
+
+# ------------------------------------------------------------------ momentum
+
+
+def cached_closes(cache) -> pd.DataFrame:
+    """Closes of assets whose history is already cached (no new downloads)."""
+    columns = {}
+    for symbol in all_symbols():
+        entry = cache.get(f"hist:{symbol}") or cache.get(f"hist:lkg:{symbol}")
+        if entry and entry.get("records"):
+            columns[symbol] = records_to_frame(entry["records"])["close"]
+    return pd.DataFrame(columns)

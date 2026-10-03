@@ -4,6 +4,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from flask import current_app, has_app_context
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,3 +92,22 @@ class AppCache:
                 logger.warning("Redis set failed (%s); using in-memory cache", exc)
                 self._redis = None
         self._memory.set(key, raw, ttl)
+
+
+_fallback_cache: Optional[AppCache] = None
+_fallback_lock = threading.Lock()
+
+
+def get_app_cache() -> AppCache:
+    """The Flask app's cache when inside an app context, else a process cache."""
+    global _fallback_cache
+    if has_app_context():
+        cache = current_app.extensions.get("app_cache")
+        if cache is None:
+            cache = AppCache(current_app.config.get("REDIS_URL"))
+            current_app.extensions["app_cache"] = cache
+        return cache
+    with _fallback_lock:
+        if _fallback_cache is None:
+            _fallback_cache = AppCache(None)
+        return _fallback_cache

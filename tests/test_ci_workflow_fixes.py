@@ -41,86 +41,20 @@ def test_app_defaults_host_to_localhost():
     raise AssertionError("Expected HOST default to be set with os.getenv().")
 
 
-def test_dashboard_wraps_requests_with_timeout_helper():
-    dashboard_tree = parse_source("dashboard.py")
-    helper = next(
-        (
-            node
-            for node in dashboard_tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "fetch_api_response"
-        ),
-        None,
-    )
-
-    ensure(helper is not None, "Expected fetch_api_response helper to exist.")
-
-    request_calls = [
-        node
-        for node in ast.walk(helper)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "requests"
-        and node.func.attr == "get"
-    ]
-
-    ensure(
-        len(request_calls) == 1,
-        "Expected helper to contain exactly one requests.get call.",
-    )
-
-    timeout_keywords = {
-        keyword.arg: keyword.value
-        for keyword in request_calls[0].keywords
-        if keyword.arg
-    }
-    timeout_value = timeout_keywords.get("timeout")
-
-    ensure(
-        isinstance(timeout_value, ast.Name),
-        "Expected timeout to reference a named constant.",
-    )
-    ensure(
-        timeout_value.id == "REQUEST_TIMEOUT_SECONDS",
-        "Expected timeout to use REQUEST_TIMEOUT_SECONDS.",
-    )
-
-
-def test_dashboard_uses_timeout_helper_for_all_http_gets():
+def test_dashboard_calls_services_in_process_without_http():
     dashboard_tree = parse_source("dashboard.py")
 
-    request_get_call_count = 0
-    helper_call_functions = set()
-
-    for function in [
-        node for node in dashboard_tree.body if isinstance(node, ast.FunctionDef)
-    ]:
-        for node in ast.walk(function):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "requests"
-                and node.func.attr == "get"
-            ):
-                request_get_call_count += 1
-
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "fetch_api_response"
-                and function.name != "fetch_api_response"
-            ):
-                helper_call_functions.add(function.name)
-
-    ensure(
-        request_get_call_count == 1,
-        "Expected dashboard requests.get usage to be centralized in the helper.",
-    )
-    ensure(
-        {"api_json"}.issubset(helper_call_functions),
-        "Expected dashboard API access to use the timeout helper.",
-    )
+    for node in ast.walk(dashboard_tree):
+        if isinstance(node, ast.Import):
+            ensure(
+                all(alias.name != "requests" for alias in node.names),
+                "Dashboard must not make HTTP requests to its own API.",
+            )
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            ensure(
+                not (node.value.id == "requests" and node.attr == "get"),
+                "Dashboard must call the service functions in-process.",
+            )
 
 
 def test_slack_notifications_are_skipped_without_secret():

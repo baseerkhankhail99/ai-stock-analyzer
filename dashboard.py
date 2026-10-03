@@ -5,20 +5,22 @@ from urllib.parse import parse_qs, quote
 
 import dash
 import plotly.graph_objects as go
-import requests
-from dash import Input, Output, State, dcc, html
+from dash import Input, Output, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 from plotly.subplots import make_subplots
 
+from services import market_data, market_service, providers
 from services.market_analysis import INDICATOR_TIPS
 from services.market_data import ASSET_NAMES
+from services.providers.chain import PROVIDERS_BY_NAME
 
 logger = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT_SECONDS = 10
-REFRESH_INTERVAL_MS = 45_000
-LIVE_MAX_AGE_SECONDS = 60
-DISCLAIMER_FOOTER = "Data may be delayed 10-15 minutes. Not financial advice."
+REFRESH_INTERVAL_MS = 60_000
+LIVE_MAX_AGE_SECONDS = 120
+DISCLAIMER_FOOTER = (
+    "Free data sources: delayed or end-of-day, not real-time. Not financial advice."
+)
 FORECAST_DISCLAIMER = (
     "Not financial advice; forecasts are statistical estimates and can be unreliable."
 )
@@ -31,9 +33,27 @@ CATEGORY_TITLES = {
     "stocks": "📈 Stocks",
     "indices": "🏛️ Indices",
 }
-RANGES = ["1D", "5D", "1M", "6M", "1Y", "5Y"]
+RANGES = list(market_data.PERIOD_CONFIG)
 GRAPH_CONFIG = {"displaylogo": False, "responsive": True}
 UP, DOWN, ACCENT = "#10b981", "#ef4444", "#3b82f6"
+
+REFRESH_OPTIONS = [
+    {"label": "30 seconds", "value": 30_000},
+    {"label": "60 seconds", "value": 60_000},
+    {"label": "120 seconds", "value": 120_000},
+    {"label": "Off", "value": 0},
+]
+FORECAST_HORIZONS = [7, 14, 30, 60, 90]
+OVERLAY_OPTIONS = [
+    {"label": "SMA 20/50", "value": "sma"},
+    {"label": "Bollinger Bands", "value": "bb"},
+]
+DEFAULT_SETTINGS = {
+    "refresh_ms": REFRESH_INTERVAL_MS,
+    "chart_range": "6M",
+    "forecast_days": 30,
+    "overlays": ["sma"],
+}
 
 # Initialize Dash app (attached to a Flask server later via init_dashboard)
 app = dash.Dash(
@@ -45,12 +65,6 @@ app = dash.Dash(
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
 )
 
-# API base URL (same origin as the dashboard by default)
-API_BASE_URL = os.getenv(
-    "API_BASE_URL",
-    f"http://127.0.0.1:{os.getenv('PORT', '7860')}/api",
-)
-
 
 def init_dashboard(flask_app):
     """Mount the dashboard on an existing Flask app."""
@@ -58,31 +72,40 @@ def init_dashboard(flask_app):
     return app
 
 
-def fetch_api_response(endpoint, params=None):
-    """Fetch API responses with a bounded timeout for dashboard requests."""
+def service_json(func, *args):
+    """Call a service function in-process; body on success (HTTP 200), else None."""
     try:
-        return requests.get(
-            f"{API_BASE_URL}{endpoint}",
-            params=params,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-    except requests.Timeout:
-        logger.warning("Dashboard request to %s timed out", endpoint)
-    except requests.RequestException as exc:
-        logger.error("Dashboard request to %s failed: %s", endpoint, exc)
-
-    return None
-
-
-def api_json(endpoint, params=None):
-    """Return the JSON body of a successful API call, otherwise None."""
-    response = fetch_api_response(endpoint, params)
-    if response is None or response.status_code != 200:
+        result = func(*args)
+    except Exception as exc:
+        logger.error("Dashboard data call %s failed: %s", func.__name__, exc)
         return None
-    try:
-        return response.json()
-    except ValueError:
-        return None
+    if isinstance(result, tuple):
+        body, status = result
+        return body if status == 200 else None
+    return result
+
+
+def normalize_settings(settings):
+    """Valid settings merged over the defaults (stored values may be stale/odd)."""
+    merged = dict(DEFAULT_SETTINGS)
+    settings = settings if isinstance(settings, dict) else {}
+    if settings.get("refresh_ms") in {o["value"] for o in REFRESH_OPTIONS}:
+        merged["refresh_ms"] = settings["refresh_ms"]
+    if settings.get("chart_range") in RANGES:
+        merged["chart_range"] = settings["chart_range"]
+    if settings.get("forecast_days") in FORECAST_HORIZONS:
+        merged["forecast_days"] = settings["forecast_days"]
+    if isinstance(settings.get("overlays"), list):
+        merged["overlays"] = [o for o in settings["overlays"] if o in {"sma", "bb"}]
+    return merged
+
+
+def overlays_for_chart(settings):
+    """Chart overlay keys for the saved default overlay choices."""
+    chosen = normalize_settings(settings)["overlays"]
+    return (["sma_20", "sma_50"] if "sma" in chosen else []) + (
+        ["bb"] if "bb" in chosen else []
+    )
 
 
 # ---------------------------------------------------------------- formatting
@@ -129,6 +152,36 @@ def format_updated(timestamp):
 
 def asset_href(symbol):
     return f"{DASH_BASE_PATH}?asset={quote(symbol, safe='')}"
+
+
+def source_label(source):
+    provider = PROVIDERS_BY_NAME.get(source)
+    return provider.label if provider else (source or "unknown")
+
+
+def source_note(source, as_of, stale=False):
+    """Honest provenance text: source, freshness class and as-of time."""
+    provider = PROVIDERS_BY_NAME.get(source)
+    parts = [source_label(source)]
+    if provider:
+        parts.append(provider.freshness)
+    if as_of:
+        parts.append(f"as of {as_of}")
+    if stale:
+        parts.append("stale")
+    return " · ".join(parts)
+
+
+def data_sources_line(overview):
+    """Footer text such as 'Prices: CoinGecko, Stooq • Updated 12:11 UTC'."""
+    used = ((overview or {}).get("sources_status") or {}).get("used") or {}
+    names = ", ".join(source_label(name) for name in used) or "unavailable"
+    when = (overview or {}).get("as_of") or (overview or {}).get("timestamp")
+    try:
+        stamp = datetime.strptime(when, "%Y-%m-%dT%H:%M:%SZ").strftime("%H:%M UTC")
+    except (TypeError, ValueError):
+        stamp = "—"
+    return f"Prices: {names} • Updated {stamp}"
 
 
 # ------------------------------------------------------------------- figures
@@ -246,7 +299,12 @@ def asset_card(item, updated_text):
                 ]
             ),
             graph,
-            html.Div(updated_text, className="asset-updated"),
+            html.Div(
+                source_note(item["source"], item.get("as_of"), item.get("stale"))
+                if item.get("source")
+                else updated_text,
+                className="asset-updated",
+            ),
         ],
     )
 
@@ -260,6 +318,27 @@ def build_home_grid(overview):
             className="warning-banner",
         )
     ]
+    priced = any(
+        item.get("price") is not None
+        for category in CATEGORY_TITLES
+        for item in overview.get(category) or []
+    )
+    if overview.get("stale"):
+        sections.insert(
+            0,
+            html.P(
+                f"🕒 {market_data.age_message(overview.get('as_of'))}",
+                className="warning-banner stale-banner",
+            ),
+        )
+    elif not priced:
+        sections.insert(
+            0,
+            html.P(
+                "Live data sources are unavailable right now. Retrying automatically…",
+                className="warning-banner stale-banner",
+            ),
+        )
     for category, title in CATEGORY_TITLES.items():
         items = overview.get(category) or []
         sections.append(html.H3(title, className="section-title"))
@@ -310,6 +389,85 @@ def with_free_text(search_value, selected=None):
 
 # -------------------------------------------------------------------- layout
 
+
+def skeleton_grid():
+    """Placeholder cards shown until the first overview arrives."""
+    return html.Div(
+        [html.Div(className="glass skeleton") for _ in range(8)],
+        className="asset-grid",
+    )
+
+
+def settings_panel():
+    return html.Div(
+        id="settings-panel",
+        className="settings-panel",
+        children=[
+            html.Div(id="settings-backdrop", className="settings-backdrop", n_clicks=0),
+            html.Div(
+                className="settings-drawer glass",
+                children=[
+                    html.Div(
+                        [
+                            html.H3("⚙️ Settings", style={"margin": 0}),
+                            html.Button(
+                                "✕",
+                                id="settings-close",
+                                n_clicks=0,
+                                className="icon-btn",
+                                title="Close settings",
+                            ),
+                        ],
+                        className="settings-head",
+                    ),
+                    html.Div("Auto-refresh interval", className="metric-label"),
+                    dcc.Dropdown(
+                        id="settings-refresh",
+                        options=REFRESH_OPTIONS,
+                        value=DEFAULT_SETTINGS["refresh_ms"],
+                        clearable=False,
+                        className="search-box",
+                    ),
+                    html.Div("Default chart range", className="metric-label"),
+                    dcc.Dropdown(
+                        id="settings-range",
+                        options=RANGES,
+                        value=DEFAULT_SETTINGS["chart_range"],
+                        clearable=False,
+                        className="search-box",
+                    ),
+                    html.Div(
+                        "Default forecast horizon (days)", className="metric-label"
+                    ),
+                    dcc.Dropdown(
+                        id="settings-forecast",
+                        options=FORECAST_HORIZONS,
+                        value=DEFAULT_SETTINGS["forecast_days"],
+                        clearable=False,
+                        className="search-box",
+                    ),
+                    html.Div(
+                        "Chart overlays shown by default", className="metric-label"
+                    ),
+                    dcc.Checklist(
+                        id="settings-overlays",
+                        options=OVERLAY_OPTIONS,
+                        value=DEFAULT_SETTINGS["overlays"],
+                        inline=True,
+                        className="overlay-toggles",
+                    ),
+                    html.H4("Data sources", style={"marginBottom": "4px"}),
+                    html.Div(id="settings-sources"),
+                    html.P(
+                        "Full per-provider test: /api/health/data",
+                        className="asset-updated",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
 home_layout = html.Div(
     [
         html.Div(
@@ -318,7 +476,13 @@ home_layout = html.Div(
             ],
             className="glass",
         ),
-        dcc.Loading(html.Div(id="home-grid"), type="circle"),
+        dcc.Loading(
+            html.Div(
+                skeleton_grid(),
+                id="home-grid",
+            ),
+            type="circle",
+        ),
     ]
 )
 
@@ -326,6 +490,9 @@ app.layout = html.Div(
     [
         dcc.Location(id="url", refresh=False),
         dcc.Store(id="overview-store"),
+        dcc.Store(
+            id="settings-store", storage_type="local", data=dict(DEFAULT_SETTINGS)
+        ),
         dcc.Interval(id="refresh-interval", interval=REFRESH_INTERVAL_MS),
         dcc.Interval(id="clock-interval", interval=1000),
         html.Div(
@@ -349,7 +516,13 @@ app.layout = html.Div(
                             placeholder="Search asset or type a symbol…",
                             className="search-box",
                         ),
-                        html.Span("⚙️", title="Settings (coming soon)"),
+                        html.Button(
+                            "⚙️",
+                            id="settings-open",
+                            n_clicks=0,
+                            className="icon-btn",
+                            title="Settings",
+                        ),
                         html.Span(id="clock", className="clock"),
                         html.Span("📊", id="live-badge", className="live-badge"),
                     ],
@@ -359,6 +532,8 @@ app.layout = html.Div(
             className="app-header",
         ),
         html.Div(id="page-content"),
+        settings_panel(),
+        html.P(id="data-sources-line", className="footer-note"),
         html.P(DISCLAIMER_FOOTER, className="footer-note"),
     ],
     className="app-shell",
@@ -451,7 +626,12 @@ def navigate_to_asset(value):
     Output("overview-store", "data"), Input("refresh-interval", "n_intervals")
 )
 def refresh_overview(_):
-    return api_json("/market/overview")
+    return service_json(market_service.overview_payload)
+
+
+@app.callback(Output("data-sources-line", "children"), Input("overview-store", "data"))
+def update_sources_line(overview):
+    return data_sources_line(overview)
 
 
 @app.callback(
@@ -461,31 +641,30 @@ def refresh_overview(_):
 )
 def update_home_grid(overview, _search):
     if not overview:
-        return html.Div(
-            "Market data is temporarily unavailable. Retrying automatically…",
-            className="glass",
-        )
+        return skeleton_grid()
     return build_home_grid(overview)
 
 
-@app.callback(
-    Output("momentum-panel", "children"),
-    Input("url", "search"),
-    Input("refresh-interval", "n_intervals"),
-)
-def update_momentum(_search, _n):
-    summary = api_json("/market/momentum")
-    if not summary:
-        return html.Div("Market momentum unavailable right now.", className="flat")
+@app.callback(Output("momentum-panel", "children"), Input("url", "search"))
+def update_momentum(_search):
+    summary = service_json(market_service.momentum_payload)
+    if not summary or not summary.get("available"):
+        message = (summary or {}).get("message") or "Market momentum unavailable."
+        return html.Div(message, className="flat")
+    sma = summary.get("pct_above_sma50")
+    rsi = summary.get("avg_rsi")
+    detail = (
+        f"{sma}% of assets above their 50-day SMA · average RSI {rsi} · "
+        if sma is not None and rsi is not None
+        else ""
+    )
     return [
         dcc.Graph(
             figure=momentum_gauge(summary),
             config={"displayModeBar": False, "responsive": True},
         ),
         html.P(
-            f"{summary['pct_above_sma50']}% of assets above their 50-day SMA · "
-            f"average RSI {summary['avg_rsi']} · "
-            f"{summary['gainers']} gainers vs {summary['losers']} losers. "
+            f"{detail}{summary['gainers']} gainers vs {summary['losers']} losers. "
             f"{summary['note']}",
             className="asset-updated",
         ),
@@ -501,7 +680,7 @@ def update_detail_price(search, _n):
     symbol = parse_asset(search)
     if not symbol:
         raise PreventUpdate
-    body = api_json(f"/market/history/{quote(symbol, safe='')}", {"period": "1M"})
+    body = service_json(market_service.history_payload, symbol, "1M")
     rows = (body or {}).get("data") or []
     if not rows:
         return html.Div(
@@ -512,9 +691,22 @@ def update_detail_price(search, _n):
     change = price - rows[-2]["close"] if len(rows) > 1 else 0
     pct = change / rows[-2]["close"] * 100 if len(rows) > 1 else 0
     cls = change_class(change)
+    notes = [
+        html.Div(
+            source_note(
+                body.get("source"), (body.get("as_of") or "")[:16], body.get("stale")
+            ),
+            className="asset-updated",
+        )
+    ]
+    if body.get("stale"):
+        notes.insert(
+            0, html.Div(f"🕒 {body.get('message')}", className="warning-banner")
+        )
     return [
         html.Span(format_price(price), className="asset-price"),
         html.Span(format_change(change, pct), className=f"change {cls}"),
+        *notes,
     ]
 
 
@@ -522,15 +714,16 @@ def update_detail_price(search, _n):
     Output("tab-content", "children"),
     Input("detail-tabs", "value"),
     Input("url", "search"),
+    State("settings-store", "data"),
 )
-def render_tab(tab, search):
+def render_tab(tab, search, settings):
     symbol = parse_asset(search)
     if not symbol:
         raise PreventUpdate
     if tab == "tab-chart":
-        return chart_tab()
+        return chart_tab(settings)
     if tab == "tab-forecast":
-        return forecast_tab()
+        return forecast_tab(settings)
     if tab == "tab-tech":
         return technical_tab(symbol)
     if tab == "tab-analytics":
@@ -541,13 +734,14 @@ def render_tab(tab, search):
 # ------------------------------------------------------------------ chart tab
 
 
-def chart_tab():
+def chart_tab(settings=None):
+    settings = normalize_settings(settings)
     return html.Div(
         [
             dcc.RadioItems(
                 id="chart-range",
                 options=RANGES,
-                value="6M",
+                value=settings["chart_range"],
                 inline=True,
                 className="range-buttons",
             ),
@@ -559,12 +753,18 @@ def chart_tab():
                     {"label": "SMA 200", "value": "sma_200"},
                     {"label": "Bollinger Bands", "value": "bb"},
                 ],
-                value=["sma_20", "sma_50"],
+                value=overlays_for_chart(settings),
                 inline=True,
                 className="overlay-toggles",
             ),
             html.Div(
                 dcc.Graph(id="chart-graph", config=GRAPH_CONFIG), className="glass"
+            ),
+            html.P(
+                "Daily candles. Volume is shown only when the data source provides "
+                "it; crypto candles from CoinGecko are approximated from daily "
+                "closes.",
+                className="asset-updated",
             ),
         ]
     )
@@ -574,7 +774,7 @@ def _fmt(value, digits=2):
     return "—" if value is None else f"{value:,.{digits}f}"
 
 
-def build_price_figure(rows, overlays):
+def build_price_figure(rows, overlays, has_volume=True):
     dates = [r["date"] for r in rows]
     hover = [
         f"O {_fmt(r['open'])} H {_fmt(r['high'])} L {_fmt(r['low'])} "
@@ -584,10 +784,10 @@ def build_price_figure(rows, overlays):
         for r in rows
     ]
     fig = make_subplots(
-        rows=2,
+        rows=2 if has_volume else 1,
         cols=1,
         shared_xaxes=True,
-        row_heights=[0.75, 0.25],
+        row_heights=[0.75, 0.25] if has_volume else [1],
         vertical_spacing=0.03,
     )
     fig.add_trace(
@@ -633,16 +833,17 @@ def build_price_figure(rows, overlays):
                 row=1,
                 col=1,
             )
-    fig.add_trace(
-        go.Bar(
-            x=dates,
-            y=[r.get("volume") for r in rows],
-            name="Volume",
-            marker_color="rgba(59,130,246,0.5)",
-        ),
-        row=2,
-        col=1,
-    )
+    if has_volume:
+        fig.add_trace(
+            go.Bar(
+                x=dates,
+                y=[r.get("volume") for r in rows],
+                name="Volume",
+                marker_color="rgba(59,130,246,0.5)",
+            ),
+            row=2,
+            col=1,
+        )
     style_figure(fig, 560)
     fig.update_layout(xaxis_rangeslider_visible=False, hovermode="closest")
     return fig
@@ -658,17 +859,18 @@ def update_price_chart(period, overlays, search):
     symbol = parse_asset(search)
     if not symbol:
         raise PreventUpdate
-    body = api_json(f"/market/history/{quote(symbol, safe='')}", {"period": period})
+    body = service_json(market_service.history_payload, symbol, period)
     rows = (body or {}).get("data") or []
     if not rows:
         return empty_figure("Unable to load price history")
-    return build_price_figure(rows, overlays or [])
+    return build_price_figure(rows, overlays or [], body.get("has_volume", True))
 
 
 # --------------------------------------------------------------- forecast tab
 
 
-def forecast_tab():
+def forecast_tab(settings=None):
+    settings = normalize_settings(settings)
     return html.Div(
         [
             html.Div(
@@ -679,7 +881,7 @@ def forecast_tab():
                         min=7,
                         max=90,
                         step=1,
-                        value=30,
+                        value=settings["forecast_days"],
                         marks={7: "7", 30: "30", 60: "60", 90: "90"},
                         tooltip={"placement": "bottom"},
                         updatemode="mouseup",
@@ -749,8 +951,7 @@ def update_forecast(days, search):
     symbol = parse_asset(search)
     if not symbol:
         raise PreventUpdate
-    safe = quote(symbol, safe="")
-    forecast = api_json(f"/stocks/{safe}/forecast", {"days": days or 30})
+    forecast = service_json(market_service.forecast_payload, symbol, days or 30)
     if not forecast:
         return (
             empty_figure("Unable to compute"),
@@ -758,7 +959,7 @@ def update_forecast(days, search):
             "Unable to compute a forecast right now. Please try again shortly. "
             + FORECAST_DISCLAIMER,
         )
-    history = api_json(f"/market/history/{safe}", {"period": "6M"})
+    history = service_json(market_service.history_payload, symbol, "6M")
     rows = (history or {}).get("data") or []
     metrics = forecast.get("metrics") or {}
     items = []
@@ -848,9 +1049,8 @@ def chart_card(figure, tip):
 
 
 def technical_tab(symbol):
-    safe = quote(symbol, safe="")
-    history = api_json(f"/market/history/{safe}", {"period": "1Y"})
-    analysis = api_json(f"/market/analysis/{safe}")
+    history = service_json(market_service.history_payload, symbol, "1Y")
+    analysis = service_json(market_service.analysis_payload, symbol)
     rows = (history or {}).get("data") or []
     if not rows or not analysis:
         return html.Div("Unable to load technical analysis.", className="glass down")
@@ -935,7 +1135,7 @@ MONTHS = [
 
 
 def analytics_tab(symbol):
-    analysis = api_json(f"/market/analysis/{quote(symbol, safe='')}")
+    analysis = service_json(market_service.analysis_payload, symbol)
     if not analysis:
         return html.Div("Unable to load analytics.", className="glass down")
     data = analysis["analytics"]
@@ -1057,9 +1257,7 @@ def update_compare(selected, search):
     others = [s for s in dict.fromkeys(selected or []) if s != symbol][:4]
     if not others:
         return html.Div("Select at least one asset to compare.", className="glass")
-    result = api_json(
-        "/market/compare", {"symbols": ",".join([symbol] + others), "period": "1Y"}
-    )
+    result = service_json(market_service.compare_payload, [symbol] + others, "1Y")
     if not result:
         return html.Div("Unable to compare these assets.", className="glass down")
 
@@ -1129,3 +1327,80 @@ def update_compare(selected, search):
             html.P(f"No data for: {', '.join(result['missing'])}", className="down")
         )
     return children
+
+
+# ------------------------------------------------------------------ settings
+
+
+@app.callback(
+    Output("settings-panel", "className"),
+    Input("settings-open", "n_clicks"),
+    Input("settings-close", "n_clicks"),
+    Input("settings-backdrop", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_settings(_open, _close, _backdrop):
+    if ctx.triggered_id == "settings-open":
+        return "settings-panel open"
+    return "settings-panel"
+
+
+@app.callback(
+    Output("settings-refresh", "value"),
+    Output("settings-range", "value"),
+    Output("settings-forecast", "value"),
+    Output("settings-overlays", "value"),
+    Input("settings-open", "n_clicks"),
+    State("settings-store", "data"),
+    prevent_initial_call=True,
+)
+def load_settings_controls(_open, stored):
+    settings = normalize_settings(stored)
+    return (
+        settings["refresh_ms"],
+        settings["chart_range"],
+        settings["forecast_days"],
+        settings["overlays"],
+    )
+
+
+@app.callback(
+    Output("settings-store", "data"),
+    Input("settings-refresh", "value"),
+    Input("settings-range", "value"),
+    Input("settings-forecast", "value"),
+    Input("settings-overlays", "value"),
+    prevent_initial_call=True,
+)
+def save_settings(refresh_ms, chart_range, forecast_days, overlays):
+    return normalize_settings(
+        {
+            "refresh_ms": refresh_ms,
+            "chart_range": chart_range,
+            "forecast_days": forecast_days,
+            "overlays": overlays,
+        }
+    )
+
+
+@app.callback(
+    Output("refresh-interval", "interval"),
+    Output("refresh-interval", "disabled"),
+    Input("settings-store", "data"),
+)
+def apply_refresh_setting(stored):
+    refresh_ms = normalize_settings(stored)["refresh_ms"]
+    return refresh_ms or REFRESH_INTERVAL_MS, refresh_ms == 0
+
+
+@app.callback(
+    Output("settings-sources", "children"),
+    Input("settings-open", "n_clicks"),
+    Input("overview-store", "data"),
+)
+def show_sources_status(_open, _overview):
+    rows = [
+        [info["label"], info["state"], info["freshness"]]
+        for info in providers.sources_status().values()
+    ]
+    return simple_table(["Source", "Status", "Data"], rows)

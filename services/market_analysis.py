@@ -286,6 +286,35 @@ def momentum_summary(closes: pd.DataFrame) -> Dict:
     }
 
 
+def momentum_from_overview(overview: Dict) -> Dict:
+    """Lighter momentum score from today's moves in an overview snapshot."""
+    moves = [
+        item["change_pct"]
+        for category in ("commodities", "cryptocurrencies", "stocks", "indices")
+        for item in overview.get(category) or []
+        if item.get("change_pct") is not None and not item.get("error")
+    ]
+    if not moves:
+        return {}
+    gainers = sum(1 for m in moves if m > 0)
+    losers = sum(1 for m in moves if m < 0)
+    gain_pct = gainers / (gainers + losers) * 100 if gainers + losers else 50.0
+    tilt = min(100.0, max(0.0, 50 + float(np.mean(moves)) * 10))
+    score = round(0.6 * gain_pct + 0.4 * tilt)
+    label = "Bullish" if score >= 60 else "Bearish" if score <= 40 else "Neutral"
+    return {
+        "score": int(score),
+        "label": label,
+        "pct_above_sma50": None,
+        "avg_rsi": None,
+        "gainers": gainers,
+        "losers": losers,
+        "assets": len(moves),
+        "note": "Based on today's moves only; open asset charts to refine it. "
+        "This is a computed indicator, not an official index.",
+    }
+
+
 def compare_assets(closes: pd.DataFrame, primary: str) -> Dict:
     """Normalized series, correlation, beta vs primary and metrics for a close matrix."""
     closes = closes.dropna(how="all").ffill().dropna()

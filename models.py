@@ -209,3 +209,16 @@ class AnalyticsReport(db.Model):
 
     def __repr__(self):
         return f"<AnalyticsReport {self.stock_id}>"
+
+
+class MarketSnapshot(db.Model):
+    """Last-known-good market data (JSON) that survives restarts"""
+
+    __tablename__ = "market_snapshots"
+
+    key = db.Column(db.String(100), primary_key=True)
+    payload = db.Column(db.Text, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self):
+        return f"<MarketSnapshot {self.key}>"

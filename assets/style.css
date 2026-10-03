@@ -111,3 +111,25 @@ body {
 
 /* Dropdown readability on dark background */
 .Select-menu-outer, .dash-dropdown-content { color: #0f172a; }
+
+.icon-btn {
+    cursor: pointer; font-size: 1.1rem; color: var(--text); padding: 4px 10px;
+    border-radius: 8px; background: var(--glass); border: 1px solid var(--glass-border);
+}
+.icon-btn:hover { background: rgba(59, 130, 246, 0.25); }
+.stale-banner { color: #fb923c; font-weight: 600; }
+
+.skeleton { height: 150px; animation: pulse 1.6s infinite; }
+
+.settings-panel { display: none; position: fixed; inset: 0; z-index: 1000; }
+.settings-panel.open { display: block; }
+.settings-backdrop { position: absolute; inset: 0; background: rgba(2, 6, 23, 0.6); }
+.settings-drawer {
+    position: absolute; top: 0; right: 0; bottom: 0; width: min(380px, 100%);
+    margin: 0; border-radius: 14px 0 0 14px; overflow-y: auto;
+    background: var(--bg-2);
+}
+.settings-head { display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 12px; }
+.settings-drawer .metric-label { margin: 12px 0 4px; }
+.settings-drawer .search-box { width: 100%; }

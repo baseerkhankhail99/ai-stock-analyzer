@@ -163,7 +163,7 @@ class StockForecastEngine:
 
     def _load_remote(self, symbol: str) -> pd.DataFrame:
         try:
-            data = market_data.fetch_history_frame(symbol, "2y", "1d")
+            data = market_data.fetch_history_frame(symbol)
             if data.empty:
                 return data
             data.index.name = "date"
