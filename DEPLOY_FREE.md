@@ -28,7 +28,8 @@ You will get a public URL such as
 3. Open the Space → **Settings → Variables and secrets** and add secrets:
    - `DATABASE_URL` – the Neon/Supabase string from Step 1
    - `SECRET_KEY` – a long random string
-   - optional: `ALPHA_VANTAGE_API_KEY`, `FINNHUB_API_KEY`
+   - optional data keys (see "Data providers" below): `FINNHUB_API_KEY`,
+     `ALPHA_VANTAGE_API_KEY`, `COINGECKO_API_KEY`
 
 ## Step 3 – Push the code
 
@@ -51,6 +52,62 @@ The Space builds the image (a few minutes) and then starts.
 `https://YOUR-USERNAME-YOUR-SPACE.hf.space/` redirects to the dashboard.
 Health check: `https://YOUR-USERNAME-YOUR-SPACE.hf.space/api/health`.
 
+## Data providers (multi-source fallback chain)
+
+Yahoo blocks or rate-limits many shared cloud IPs (Render, Spaces), so Yahoo is
+**not** the only source. Each asset tries providers in order and the first one
+that answers wins (the answering `source` and its `as_of` time are shown on
+every card):
+
+| Asset | Chain |
+|---|---|
+| Crypto (`*-USD`) | CoinGecko (one call for the overview) → Binance public API (may be geo-blocked, fails gracefully) → Yahoo |
+| Stocks, indices, commodities | Finnhub (if `FINNHUB_API_KEY`) → Stooq (keyless CSV) → Alpha Vantage (if `ALPHA_VANTAGE_API_KEY`, detail views only) → Yahoo chart → yfinance |
+
+Optional environment variables (all can be left unset):
+
+| Variable | Effect |
+|---|---|
+| `FINNHUB_API_KEY` | Enables Finnhub quotes for US stocks (candles are premium; the app falls back when Finnhub answers 403) |
+| `ALPHA_VANTAGE_API_KEY` | Enables Alpha Vantage daily history for single-symbol detail views (free key: 25 calls/day, the app stops at 20) |
+| `COINGECKO_API_KEY` | CoinGecko demo key, sent as the `x-cg-demo-api-key` header for higher rate limits |
+
+Behaviour to know about:
+
+- A provider that answers 403/429 (rate limited/blocked) is skipped for 5
+  minutes (circuit breaker) so the ban is not extended.
+- The overview is cached for 60 s and fetched concurrently (max 6 workers,
+  about 12 s budget). History per symbol is fetched once (~2y daily), shared by
+  the chart, forecast, technical, analytics and compare views, cached 15 min.
+- The last good overview/history is kept in memory and in the database
+  (`market_snapshots` table). If every provider fails, it is shown with
+  "Showing data from X minutes ago — live source unavailable".
+- Stooq data is end-of-day; crypto is delayed ~1-2 minutes; Yahoo up to 15
+  minutes. CoinGecko history is daily closes (candles are approximated and
+  volume comes from CoinGecko's daily totals).
+- `GET /api/market/momentum` never returns 502: it answers 200 with
+  `{"available": false, "message": ...}` when it cannot be computed.
+
+### Checking the data sources
+
+Open `https://YOUR-APP/api/health/data`. For AAPL (stock), BTC-USD (crypto),
+GC=F (commodity) and ^GSPC (index) it tries every provider individually and
+reports `ok`, `latency_ms` and the error reason per provider (cached for 60 s;
+API keys are never included). Alpha Vantage is skipped to protect its daily
+quota unless you add `?alphavantage=1`. The Settings (gear) panel shows the same
+provider state, and the dashboard footer shows e.g.
+`Prices: CoinGecko, Stooq • Updated 12:11 UTC`.
+
+## Start command (Render)
+
+The dashboard calls the services in-process, so a single worker with several
+threads is enough and keeps the in-memory cache shared (good for the 512 MB
+free tier):
+
+```bash
+gunicorn --bind 0.0.0.0:$PORT --workers 1 --worker-class gthread --threads 8 --timeout 120 "app:create_app()"
+```
+
 ## Free-tier limits (be aware)
 
 - **Sleeping:** free Spaces go to sleep when idle; the first visit afterwards
@@ -58,8 +115,8 @@ Health check: `https://YOUR-USERNAME-YOUR-SPACE.hf.space/api/health`.
 - **Storage:** the Space disk is temporary. Neon's free plan has a small
   storage cap, and free databases may also suspend when idle (the first query
   after that is slower).
-- **Data provider:** `yfinance` is an unofficial Yahoo Finance wrapper. It can
-  be rate-limited or break without notice, so some symbols may return no data.
+- **Data providers:** free sources are delayed or end-of-day, never guaranteed
+  real-time (see "Data providers" below).
 - **Forecasts:** the default forecast uses a scikit-learn ensemble. Prophet and
   TensorFlow/LSTM are optional/not installed in the slim deployment.
 

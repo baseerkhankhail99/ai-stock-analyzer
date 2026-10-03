@@ -8,6 +8,7 @@ import requests
 import yfinance as yf
 
 from models import Stock, StockPrice, db
+from services import providers
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,18 @@ class StockDataFetcher:
         self.finnhub_key = os.getenv("FINNHUB_API_KEY")
 
     def fetch_real_time_price(self, symbol: str) -> Dict:
-        """Fetch real-time stock price using yfinance"""
+        """Latest (possibly delayed) price from the provider chain, then yfinance"""
+        quote, source = providers.get_quote(symbol.upper())
+        if quote:
+            return {
+                "symbol": symbol,
+                "price": quote["price"],
+                "change": quote["change"],
+                "change_percent": quote["change_pct"],
+                "source": source,
+                "as_of": quote["as_of"],
+                "timestamp": datetime.now(),
+            }
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period="1d")
@@ -50,7 +62,10 @@ class StockDataFetcher:
             return {}
 
     def fetch_historical_data(self, symbol: str, days: int = 365) -> pd.DataFrame:
-        """Fetch historical data"""
+        """Fetch historical data from the provider chain (daily OHLCV)"""
+        frame, _ = providers.get_history(symbol.upper(), days)
+        if not frame.empty:
+            return frame
         try:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days)
@@ -137,7 +152,18 @@ class CryptoDataFetcher:
     """Fetch cryptocurrency data"""
 
     def fetch_real_time_crypto(self, symbol: str = "BTC-USD") -> Dict:
-        """Fetch real-time crypto price"""
+        """Fetch crypto price from the provider chain, then yfinance"""
+        quote, source = providers.get_quote(symbol.upper())
+        if quote:
+            return {
+                "symbol": symbol,
+                "price": quote["price"],
+                "change": quote["change"],
+                "change_percent": quote["change_pct"],
+                "source": source,
+                "as_of": quote["as_of"],
+                "timestamp": datetime.now(),
+            }
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period="1d")
