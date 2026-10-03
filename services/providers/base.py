@@ -11,8 +11,11 @@ import requests
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT_SECONDS = 8
-BREAKER_COOLDOWN_SECONDS = 300
+BREAKER_COOLDOWN_SECONDS = 60
+BREAKER_MAX_COOLDOWN_SECONDS = 600
+LOG_INTERVAL_SECONDS = 60
 RETRY_BACKOFF_SECONDS = 0.5
+DEFAULT_USER_AGENT = "ai-stock-analyzer/2.0 (+https://github.com/baseerkhankhail99)"
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -34,21 +37,46 @@ class RateLimited(ProviderError):
 
 
 class CircuitBreaker:
-    """Skip a provider for a cool-down period after it rate-limits us."""
+    """Skip a provider for a cool-down after it rate-limits or blocks us.
+
+    The cool-down doubles for each consecutive trip (up to a maximum) and is
+    reset by ``success`` so one blocked response never locks a provider out
+    for long once it recovers. The reason is kept for the diagnostics panel.
+    """
 
     def __init__(
         self,
         cooldown: float = BREAKER_COOLDOWN_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        max_cooldown: float = BREAKER_MAX_COOLDOWN_SECONDS,
     ):
         self.cooldown = cooldown
+        self.max_cooldown = max(max_cooldown, cooldown)
         self._clock = clock
         self._until: Dict[str, float] = {}
+        self._strikes: Dict[str, int] = {}
+        self._reasons: Dict[str, str] = {}
         self._lock = threading.Lock()
 
-    def trip(self, name: str, cooldown: Optional[float] = None) -> None:
+    def trip(
+        self, name: str, cooldown: Optional[float] = None, reason: str = ""
+    ) -> None:
         with self._lock:
-            self._until[name] = self._clock() + (cooldown or self.cooldown)
+            strikes = self._strikes.get(name, 0)
+            if cooldown is None:
+                cooldown = min(self.cooldown * (2**strikes), self.max_cooldown)
+            self._strikes[name] = strikes + 1
+            self._until[name] = self._clock() + cooldown
+            self._reasons[name] = reason
+
+    def success(self, name: str) -> None:
+        with self._lock:
+            self._strikes.pop(name, None)
+            self._reasons.pop(name, None)
+
+    def reason(self, name: str) -> str:
+        with self._lock:
+            return self._reasons.get(name, "")
 
     def remaining(self, name: str) -> int:
         with self._lock:
@@ -60,21 +88,91 @@ class CircuitBreaker:
 
     def reset(self, name: Optional[str] = None) -> None:
         with self._lock:
-            if name is None:
-                self._until.clear()
-            else:
-                self._until.pop(name, None)
+            for store in (self._until, self._strikes, self._reasons):
+                if name is None:
+                    store.clear()
+                else:
+                    store.pop(name, None)
+
+
+class TokenBucket:
+    """Thread-safe token bucket used to respect provider rate limits."""
+
+    def __init__(
+        self,
+        rate_per_minute: float,
+        capacity: Optional[float] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.rate = rate_per_minute / 60.0
+        self.capacity = float(capacity if capacity is not None else rate_per_minute)
+        self._tokens = self.capacity
+        self._clock = clock
+        self._stamp = clock()
+        self._lock = threading.Lock()
+
+    def take(self, tokens: float = 1.0) -> bool:
+        with self._lock:
+            now = self._clock()
+            self._tokens = min(
+                self.capacity, self._tokens + (now - self._stamp) * self.rate
+            )
+            self._stamp = now
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                return True
+            return False
+
+    def wait_seconds(self, tokens: float = 1.0) -> int:
+        with self._lock:
+            missing = tokens - self._tokens
+        return int(missing / self.rate) + 1 if missing > 0 and self.rate else 0
+
+
+class LogThrottle:
+    """Allow one log line per key and interval (default once per minute)."""
+
+    def __init__(
+        self,
+        interval: float = LOG_INTERVAL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.interval = interval
+        self._clock = clock
+        self._last: Dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            last = self._last.get(key)
+            if last is not None and now - last < self.interval:
+                return False
+            self._last[key] = now
+            return True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._last.clear()
+
+
+log_throttle = LogThrottle()
 
 
 breaker = CircuitBreaker()
 
 
-def http_get(url, params=None, headers=None, retries: int = 1):
+def http_get(url, params=None, headers=None, retries: int = 1, limiter=None):
     """GET with an explicit timeout; retries (with backoff) only on 5xx.
 
     Raises RateLimited for 403/429/451 and ProviderError for other failures.
     Error messages deliberately omit URLs because they may carry API keys.
+    An optional ``TokenBucket`` limiter rejects the call locally (without
+    tripping the circuit breaker) when the provider's rate budget is spent.
     """
+    headers = {"User-Agent": DEFAULT_USER_AGENT, **(headers or {})}
+    if limiter is not None and not limiter.take():
+        raise ProviderError(f"local rate limit, retry in {limiter.wait_seconds()}s")
     for attempt in range(retries + 1):
         try:
             response = requests.get(
@@ -128,8 +226,11 @@ def build_frame(rows) -> pd.DataFrame:
     return frame
 
 
+SPARKLINE_POINTS = 30
+
+
 def quote_from_frame(frame: pd.DataFrame) -> Dict:
-    """Latest price, daily change and a 5 point sparkline from a history frame."""
+    """Latest price, daily change and a 30 point sparkline from a history frame."""
     closes = [float(v) for v in frame["Close"].dropna().tolist()]
     if not closes:
         raise NoData("no price data")
@@ -140,7 +241,7 @@ def quote_from_frame(frame: pd.DataFrame) -> Dict:
         "price": price,
         "change": change,
         "change_pct": (change / previous * 100) if previous else 0.0,
-        "sparkline": closes[-5:],
+        "sparkline": closes[-SPARKLINE_POINTS:],
         "as_of": pd.Timestamp(frame.index[-1]).strftime("%Y-%m-%d"),
     }
 
@@ -154,6 +255,8 @@ class Provider:
     detail_only = False
     # delay note shown to users, never claim real time
     freshness = "delayed"
+    # kind of timestamp the provider delivers: "realtime", "delayed" or "eod"
+    latency = "delayed"
 
     def available(self) -> bool:
         return True
@@ -165,4 +268,8 @@ class Provider:
         raise NotImplementedError
 
     def get_quote(self, symbol: str) -> Dict:
-        return quote_from_frame(self.get_history(symbol, 14))
+        return quote_from_frame(self.get_history(symbol, 45))
+
+    def get_ticker_quote(self, symbol: str) -> Dict:
+        """Cheapest possible latest-price call (defaults to ``get_quote``)."""
+        return self.get_quote(symbol)

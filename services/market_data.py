@@ -8,6 +8,7 @@ database) that is served with ``stale: true`` when all providers fail.
 import logging
 import re
 import threading
+import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -18,7 +19,9 @@ from flask import current_app, has_app_context
 
 from services import providers
 from services.cache import get_app_cache
+from services.providers.equities import ETF_PROXIES
 from services.snapshots import load_snapshot, save_snapshot
+from services.tick_store import freshness, latency_for, tick_store
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +36,11 @@ SYMBOL_PATTERN = re.compile(r"^[A-Z0-9^.=\-]{1,15}$")
 MAX_WORKERS = 6
 MIN_MOMENTUM_ASSETS = 3
 DELAYED_WARNING = (
-    "Prices come from free sources: crypto is delayed ~1-2 min, stocks and "
-    "commodities may be delayed up to 15 min or end-of-day. Not real-time."
+    "Some prices come from free sources that are delayed or end-of-day; "
+    "check the badge on each asset."
 )
+SPARKLINE_POINTS = 30
+MAX_TICK_AGE_SECONDS = 6 * 3600
 OVERVIEW_KEY = "market:overview"
 OVERVIEW_LKG_KEY = "market:overview:lkg"
 
@@ -137,42 +142,145 @@ def _failed_asset(symbol: str, name: str) -> Dict:
 
 
 def _asset_from_quote(symbol: str, name: str, quote: Dict, source: str) -> Dict:
+    price = round(float(quote["price"]), 4)
+    change = round(float(quote.get("change") or 0.0), 4)
     return {
         "symbol": symbol,
         "name": name,
-        "price": round(float(quote["price"]), 4),
-        "change": round(float(quote.get("change") or 0.0), 4),
+        "price": price,
+        "change": change,
+        "prev_close": round(price - change, 4),
         "change_pct": round(float(quote.get("change_pct") or 0.0), 2),
         "sparkline": [round(float(v), 4) for v in quote.get("sparkline") or []],
         "source": source,
         "as_of": quote.get("as_of") or "",
+        "ts": quote.get("ts"),
+        "derived_from_history": bool(quote.get("derived_from_history")),
     }
 
 
-def build_overview(fetcher: Optional[Callable] = None) -> Dict:
+def _history_closes(cache, symbol: str) -> List[float]:
+    """Closes from already cached history (fresh or last-known-good); no network."""
+    entry = cache.get(f"hist:{symbol}") or cache.get(f"hist:lkg:{symbol}")
+    records = (entry or {}).get("records") or []
+    return [float(r["close"]) for r in records if r.get("close") is not None]
+
+
+def _entry_source(cache, symbol: str) -> str:
+    entry = cache.get(f"hist:{symbol}") or cache.get(f"hist:lkg:{symbol}") or {}
+    return entry.get("source") or "history"
+
+
+def quote_from_closes(closes: List[float]) -> Optional[Dict]:
+    """Price, change and 30-point sparkline from closes (last vs previous)."""
+    if not closes:
+        return None
+    price = closes[-1]
+    previous = closes[-2] if len(closes) > 1 else price
+    change = price - previous
+    return {
+        "price": price,
+        "change": change,
+        "change_pct": (change / previous * 100) if previous else 0.0,
+        "sparkline": closes[-SPARKLINE_POINTS:],
+        "as_of": "",
+        "ts": None,
+        "derived_from_history": True,
+    }
+
+
+def apply_tick(item: Dict, tick: Optional[Dict]) -> Dict:
+    """Overlay a newer live tick on an overview item (change vs prev close)."""
+    if not tick or item.get("error") and not item.get("prev_close"):
+        return item
+    if item.get("ts") and tick["ts"] <= item["ts"]:
+        return item
+    if time.time() - tick["ts"] > MAX_TICK_AGE_SECONDS:
+        return item
+    prev = item.get("prev_close")
+    updated = {**item, "price": round(tick["price"], 4), "ts": tick["ts"]}
+    updated["source"] = tick["source"]
+    if prev:
+        updated["change"] = round(tick["price"] - prev, 4)
+        updated["change_pct"] = round((tick["price"] - prev) / prev * 100, 2)
+    return updated
+
+
+def decorate_asset(item: Dict) -> Dict:
+    """Add the freshness badge (computed from the tick timestamp, at read time)."""
+    if item.get("price") is None:
+        return item
+    return {**item, "freshness": freshness(item.get("ts"), item.get("source"))}
+
+
+def _build_proxies(proxies: Dict) -> Dict[str, Dict]:
+    """Labelled live ETF proxies; never presented as the underlying price."""
+    result = {}
+    for symbol, (etf, label) in ETF_PROXIES.items():
+        if etf not in proxies:
+            continue
+        quote, source = proxies[etf]
+        result[symbol] = {
+            "etf": etf,
+            "label": label,
+            "price": round(float(quote["price"]), 4),
+            "change_pct": round(float(quote.get("change_pct") or 0.0), 2),
+            "source": source,
+            "ts": quote.get("ts"),
+        }
+    return result
+
+
+def build_overview(
+    fetcher: Optional[Callable] = None, proxy_fetcher: Optional[Callable] = None
+) -> Dict:
     """Overview of all known assets; failing assets never break the response."""
     fetcher = fetcher or providers.fetch_quotes
+    proxy_fetcher = proxy_fetcher or providers.fetch_proxy_quotes
     try:
         quotes = fetcher(all_symbols())
     except Exception as exc:
         logger.error("Overview fetch failed: %s", type(exc).__name__)
         quotes = {}
+    try:
+        proxies = proxy_fetcher()
+    except Exception as exc:
+        logger.warning("Proxy quotes failed: %s", type(exc).__name__)
+        proxies = {}
 
+    cache = get_app_cache()
     overview: Dict = {}
     used: Dict[str, int] = {}
     failed: List[str] = []
     for category, assets in ASSET_CATALOG.items():
         items = []
         for symbol, name in assets:
+            item = None
             try:
                 quote, source = quotes[symbol]
-                items.append(_asset_from_quote(symbol, name, quote, source))
-                used[source] = used.get(source, 0) + 1
+                item = _asset_from_quote(symbol, name, quote, source)
             except (KeyError, TypeError, ValueError):
-                logger.warning("Overview data unavailable for %s", symbol)
+                item = None
+            closes = _history_closes(cache, symbol)
+            if item is None and closes:
+                # a quote provider failed but history is cached: never blank
+                quote = quote_from_closes(closes)
+                item = _asset_from_quote(
+                    symbol, name, quote, _entry_source(cache, symbol)
+                )
+            elif item is not None and len(item["sparkline"]) < 2 and closes:
+                item["sparkline"] = [round(v, 4) for v in closes[-SPARKLINE_POINTS:]]
+            if item is None:
+                logger.debug("Overview data unavailable for %s", symbol)
                 items.append(_failed_asset(symbol, name))
                 failed.append(symbol)
+                continue
+            if item["source"] in ("history",) or item.get("derived_from_history"):
+                item["ts"] = None
+            items.append(item)
+            used[item["source"]] = used.get(item["source"], 0) + 1
         overview[category] = items
+    overview["proxies"] = _build_proxies(proxies or {})
     overview["timestamp"] = utc_now_iso()
     overview["as_of"] = overview["timestamp"]
     overview["stale"] = False
@@ -181,6 +289,7 @@ def build_overview(fetcher: Optional[Callable] = None) -> Dict:
         "used": used,
         "failed": failed,
         "providers": providers.sources_status(),
+        "reasons": providers.failure_reasons(),
     }
     return overview
 
@@ -212,14 +321,35 @@ def _merge_stale(overview: Dict, previous: Optional[Dict]) -> None:
         overview[category] = merged
 
 
-def get_overview(cache=None, fetcher: Optional[Callable] = None) -> Dict:
+def live_overview(overview: Dict) -> Dict:
+    """Overview with the latest ticks applied and freshness badges attached.
+
+    Cheap (memory only): used by the 5 second dashboard refresh.
+    """
+    result = dict(overview)
+    for category in ASSET_CATALOG:
+        result[category] = [
+            decorate_asset(apply_tick(item, tick_store.get(item["symbol"])))
+            for item in overview.get(category) or []
+        ]
+    delayed = any(
+        item.get("freshness", {}).get("state") in ("delayed", "eod")
+        for _, item in _iter_assets(result)
+    )
+    result["any_delayed"] = delayed
+    return result
+
+
+def get_overview(
+    cache=None, fetcher: Optional[Callable] = None, force: bool = False
+) -> Dict:
     """Overview with 60s caching and a stale last-known-good fallback."""
     cache = cache or get_app_cache()
-    cached = cache.get(OVERVIEW_KEY)
+    cached = None if force else cache.get(OVERVIEW_KEY)
     if cached is not None:
         return cached
     with _lock_for("overview"):
-        cached = cache.get(OVERVIEW_KEY)
+        cached = None if force else cache.get(OVERVIEW_KEY)
         if cached is not None:
             return cached
         overview = build_overview(fetcher)
@@ -279,7 +409,7 @@ def _history_result(entry: Optional[Dict], stale: bool) -> Dict:
     }
 
 
-def fetch_history(symbol: str, cache=None) -> Dict:
+def fetch_history(symbol: str, cache=None, force: bool = False) -> Dict:
     """Shared ~2y daily history of one symbol (cached 15 min, stale fallback).
 
     Returns {"frame", "source", "stale", "as_of"}; the frame has lower-case
@@ -288,14 +418,14 @@ def fetch_history(symbol: str, cache=None) -> Dict:
     symbol = normalize_symbol(symbol)
     cache = cache or get_app_cache()
     key, lkg_key = f"hist:{symbol}", f"hist:lkg:{symbol}"
-    cached = cache.get(key)
+    cached = None if force else cache.get(key)
     if cached is not None:
         return _history_result(cached, False)
     with _lock_for(key):
-        cached = cache.get(key)
+        cached = None if force else cache.get(key)
         if cached is not None:
             return _history_result(cached, False)
-        if cache.get(f"hist:fail:{symbol}") is None:
+        if force or cache.get(f"hist:fail:{symbol}") is None:
             frame, source = providers.get_history(symbol, HISTORY_DAYS)
             if not frame.empty:
                 entry = {

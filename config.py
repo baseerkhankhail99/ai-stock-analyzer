@@ -51,7 +51,9 @@ class Config:
     """Base configuration"""
 
     # Flask
+    # Must be set via env in production (auth.init_auth refuses weak keys there)
     SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+    CSRF_ENABLED = True
     DEBUG = False
     TESTING = False
 
@@ -165,7 +167,8 @@ class TestingConfig(Config):
     SQLALCHEMY_ENGINE_OPTIONS = {}
     REDIS_URL = None
     CACHE_REDIS_URL = None
-    WTF_CSRF_ENABLED = False
+    CSRF_ENABLED = False
+    SECRET_KEY = "testing-secret-key-not-for-production"
 
 
 config = {

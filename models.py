@@ -222,3 +222,79 @@ class MarketSnapshot(db.Model):
 
     def __repr__(self):
         return f"<MarketSnapshot {self.key}>"
+
+
+class User(db.Model):
+    """Application user (username compared case-insensitively via username_key)"""
+
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(64), nullable=False)
+    username_key = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    password_hash = db.Column(db.String(256), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default="viewer")
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = db.Column(db.DateTime)
+    failed_attempts = db.Column(db.Integer, nullable=False, default=0)
+    locked_until = db.Column(db.DateTime)
+    must_change_password = db.Column(db.Boolean, nullable=False, default=False)
+
+    def __repr__(self):
+        return f"<User {self.username} ({self.role})>"
+
+
+class AuditLog(db.Model):
+    """Who did what (logins, failures, user management, password changes)"""
+
+    __tablename__ = "audit_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    actor = db.Column(db.String(64))
+    action = db.Column(db.String(64), nullable=False, index=True)
+    target = db.Column(db.String(128))
+    ip = db.Column(db.String(64))
+    created_at = db.Column(
+        db.DateTime, default=datetime.utcnow, nullable=False, index=True
+    )
+
+
+class WatchlistItem(db.Model):
+    """A symbol pinned by a user"""
+
+    __tablename__ = "watchlist_items"
+    __table_args__ = (db.UniqueConstraint("user_id", "symbol", name="uq_watch"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    symbol = db.Column(db.String(20), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PriceAlert(db.Model):
+    """Per-user price alert (above/below a threshold)"""
+
+    __tablename__ = "price_alerts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    symbol = db.Column(db.String(20), nullable=False)
+    direction = db.Column(db.String(10), nullable=False)  # above | below
+    threshold = db.Column(db.Float, nullable=False)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    triggered_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PortfolioHolding(db.Model):
+    """Per-user holding for the portfolio tracker"""
+
+    __tablename__ = "portfolio_holdings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    symbol = db.Column(db.String(20), nullable=False)
+    quantity = db.Column(db.Float, nullable=False)
+    cost_basis = db.Column(db.Float, nullable=False)  # per unit
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

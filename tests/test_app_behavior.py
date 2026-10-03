@@ -78,7 +78,7 @@ def test_app_starts_with_unreachable_redis(monkeypatch):
     flask_app = create_app("testing")
     with flask_app.app_context():
         ensure_equal(api_module.get_cache().backend, "memory")
-    response = flask_app.test_client().get("/api/health")
+    response = flask_app.test_client().get("/healthz")
     ensure_equal(response.status_code, 200)
 
 
