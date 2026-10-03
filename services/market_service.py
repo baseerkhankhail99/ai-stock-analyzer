@@ -31,7 +31,8 @@ forecast_engine = StockForecastEngine()
 
 
 def overview_payload() -> Dict:
-    return market_data.get_overview()
+    """Cached overview with the latest ticks and per-asset freshness badges."""
+    return market_data.live_overview(market_data.get_overview())
 
 
 def momentum_payload() -> Dict:

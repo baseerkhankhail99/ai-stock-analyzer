@@ -4,9 +4,12 @@ import os
 from flask import Flask, jsonify, redirect
 from flask_cors import CORS
 
+import auth
 from config import config
 from models import db
+from routes.account_api import account_api
 from routes.api import api
+from services import background
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,12 +26,14 @@ def create_app(config_name=None):
     # Load configuration
     app.config.from_object(config[config_name])
 
-    # Initialize extensions
+    # Authentication (refuses weak SECRET_KEY in production), then extensions
+    auth.init_auth(app, config_name)
     db.init_app(app)
     CORS(app, origins=app.config.get("CORS_ORIGINS", ["*"]))
 
     # Register blueprints
     app.register_blueprint(api)
+    app.register_blueprint(account_api)
 
     # Error handlers
     @app.errorhandler(404)
@@ -47,6 +52,7 @@ def create_app(config_name=None):
             logger.info("Database tables created/verified")
         except Exception as exc:
             logger.error("Could not create database tables: %s", exc)
+    auth.seed_master_user(app)
 
     # Mount the Dash dashboard on the same WSGI app
     dashboard_enabled = app.config.get("ENABLE_DASHBOARD", True)
@@ -60,6 +66,9 @@ def create_app(config_name=None):
             dashboard_enabled = False
             logger.error("Dashboard could not be mounted: %s", exc)
 
+    if background.enabled(app):
+        background.start(app)
+
     # Root endpoint
     @app.route("/", methods=["GET"])
     def index():
@@ -72,7 +81,7 @@ def create_app(config_name=None):
                     "version": "1.0.0",
                     "description": "Advanced stock analysis and forecasting platform",
                     "endpoints": {
-                        "health": "/api/health",
+                        "health": "/healthz",
                         "stocks": "/api/stocks/<symbol>/price",
                         "forecast": "/api/stocks/<symbol>/forecast",
                         "analytics": "/api/stocks/<symbol>/analytics",

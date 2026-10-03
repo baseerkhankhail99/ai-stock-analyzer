@@ -23,4 +23,4 @@ EXPOSE 7860
 
 # gthread workers: provider calls can be slow, so a worker must be able to serve
 # other requests meanwhile. The dashboard calls the services in-process.
-CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "2", "--worker-class", "gthread", "--threads", "8", "--timeout", "120", "app:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "1", "--worker-class", "gthread", "--threads", "8", "--timeout", "120", "app:create_app()"]
